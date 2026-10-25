@@ -337,7 +337,9 @@ function LoadBoard() {
               className="h-8 w-full min-w-0 rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line placeholder:text-mut focus:ring-accent/40 focus:outline-none sm:w-64"
             />
             <GhostButton onClick={exportCsv}>Export</GhostButton>
-            {me?.canWrite && <GhostButton onClick={() => setImporting(true)}>Import</GhostButton>}
+            {me?.canWrite && (
+              <GhostButton onClick={() => setImporting(true)}>Import / CSV</GhostButton>
+            )}
             {me?.canWrite && (
               <GhostButton onClick={() => setTemplatesOpen(true)}>Templates</GhostButton>
             )}
@@ -866,6 +868,55 @@ type LoadForm = {
 
 const s = (v: unknown) => (v == null ? "" : String(v));
 
+function normalizeCsvHeader(value: string) {
+  return value
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function csvNumber(value: string | undefined) {
+  const parsed = Number(String(value ?? "").replace(/[$,\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseCsv(input: string): Record<string, string>[] {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (char === '"') {
+      if (quoted && input[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      record.push(field);
+      field = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && input[i + 1] === "\n") i += 1;
+      record.push(field);
+      if (record.some((cell) => cell.trim())) records.push(record);
+      record = [];
+      field = "";
+    } else field += char;
+  }
+  record.push(field);
+  if (record.some((cell) => cell.trim())) records.push(record);
+  if (!records.length) return [];
+  const firstRecord = records[0];
+  if (!firstRecord) return [];
+  const headers = firstRecord.map((header) => header.replace(/^\uFEFF/, "").trim());
+  return records
+    .slice(1)
+    .map((cells) =>
+      Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ""])),
+    );
+}
+
 function ImportModal({
   brokers,
   onClose,
@@ -879,6 +930,7 @@ function ImportModal({
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [importingCsv, setImportingCsv] = useState(false);
   const scan = useServerFn(scanLoadFile);
   const qc = useQueryClient();
   const [pending, setPending] = useState<Partial<LoadForm> | null>(null);
@@ -941,6 +993,93 @@ function ImportModal({
     setPreview(f && f.type.startsWith("image/") ? URL.createObjectURL(f) : null);
   }
 
+  async function importTripsCsv(csvFile: File) {
+    if (csvFile.size > 20 * 1024 * 1024) return void toast.error("CSV is too large (max 20 MB)");
+    setImportingCsv(true);
+    try {
+      const rows = parseCsv(await csvFile.text());
+      if (!rows.length) throw new Error("The CSV has no data rows");
+      const firstRow = rows[0];
+      if (!firstRow) throw new Error("The CSV has no data rows");
+      const headers = Object.keys(firstRow);
+      const col = (aliases: string[]) =>
+        headers.find((h) => aliases.includes(normalizeCsvHeader(h)));
+      const tripCol = col(["tripid"]);
+      const stageCol = col(["tripstage"]);
+      const loadCol = col(["loadid"]);
+      const executionCol = col(["loadexecutionstatus"]);
+      const milesCol = col(["estimatedistance", "estimatedmiles"]);
+      const rateCol = col(["estimatedcost", "rate"]);
+      if ((!tripCol && !loadCol) || !stageCol || !executionCol || !milesCol || !rateCol) {
+        throw new Error(
+          "CSV needs Trip ID (or Load ID), Trip Stage, Load Execution Status, Estimate Distance, and Estimated Cost columns",
+        );
+      }
+      const trips = new Map<string, { id: string; stage: string; miles: number; rate: number }>();
+      for (const row of rows) {
+        const id = String((tripCol ? row[tripCol] : "") || (loadCol ? row[loadCol] : "") || "")
+          .trim()
+          .toUpperCase();
+        if (!id) continue;
+        const stage = String(row[stageCol] ?? "").trim();
+        const trip = trips.get(id) ?? { id, stage, miles: 0, rate: 0 };
+        if (!trip.stage && stage) trip.stage = stage;
+        if (/^(completed|complete|delivered)$/i.test(String(row[executionCol] ?? "").trim())) {
+          trip.miles += csvNumber(row[milesCol]);
+          trip.rate += csvNumber(row[rateCol]);
+        }
+        trips.set(id, trip);
+      }
+      const grouped = [...trips.values()];
+      if (!grouped.length) throw new Error("No rows with a Trip ID or Load ID were found");
+      const existingIds = new Set<string>();
+      for (let offset = 0; offset < grouped.length; offset += 100) {
+        const idBatch = grouped.slice(offset, offset + 100).map((trip) => trip.id);
+        const { data: existingLoads, error: existingError } = await supabase
+          .from("loads")
+          .select("load_number")
+          .in("load_number", idBatch);
+        if (existingError) throw new Error(existingError.message);
+        for (const load of existingLoads ?? []) existingIds.add(load.load_number.toUpperCase());
+      }
+      const fresh = grouped.filter((trip) => !existingIds.has(trip.id.toUpperCase()));
+      const { data: userData } = await supabase.auth.getUser();
+      const toStatus = (stage: string) => {
+        const value = stage.toLowerCase();
+        if (/cancel/.test(value)) return "cancelled";
+        if (/reject/.test(value)) return "rejected";
+        if (/complete|deliver/.test(value)) return "delivered";
+        if (/transit|progress|started/.test(value)) return "in_transit";
+        if (/paid/.test(value)) return "paid";
+        return "new";
+      };
+      const inserts = fresh.map((trip) => ({
+        load_number: trip.id,
+        status: toStatus(trip.stage),
+        miles: Math.round(trip.miles * 100) / 100,
+        rate: Math.round(trip.rate * 100) / 100,
+        equipment_type: "Power only",
+        created_by: userData.user?.id ?? null,
+      }));
+      for (let offset = 0; offset < inserts.length; offset += 100) {
+        const { error } = await supabase.from("loads").insert(inserts.slice(offset, offset + 100));
+        if (error) throw new Error(error.message);
+      }
+      if (inserts.length) {
+        await qc.invalidateQueries({ queryKey: ["loads"] });
+        await qc.invalidateQueries({ queryKey: ["loads", "all"] });
+      }
+      toast.success(
+        `Imported ${inserts.length} trips${grouped.length - inserts.length ? ` · skipped ${grouped.length - inserts.length} duplicates` : ""}. Completed leg miles and rates were combined; cancelled legs were ignored.`,
+      );
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not import CSV");
+    } finally {
+      setImportingCsv(false);
+    }
+  }
+
   async function scanFile() {
     if (!file) return undefined;
     if (file.size > 10 * 1024 * 1024) {
@@ -994,7 +1133,7 @@ function ImportModal({
         delivery_date: (last?.scheduled ?? "").slice(0, 10),
         miles: miles != null ? String(Math.round(miles)) : "",
         rate: l.rate != null ? String(l.rate) : "",
-        equipment_type: l.equipment_type || "Dry van",
+        equipment_type: l.equipment_type || "Power only",
         notes: extra.join("\n"),
       });
       toast.success("Load scanned — confirm the broker");
@@ -1054,14 +1193,25 @@ function ImportModal({
           <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-line bg-ink p-4 text-xs text-mut hover:text-fg">
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp,application/pdf"
+              accept="image/png,image/jpeg,image/webp,application/pdf,.csv,text/csv"
               className="hidden"
-              onChange={(e) => pick(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const selected = e.target.files?.[0] ?? null;
+                if (selected?.name.toLowerCase().endsWith(".csv")) void importTripsCsv(selected);
+                else pick(selected);
+                e.currentTarget.value = "";
+              }}
             />
             {preview ? (
               <img src={preview} alt="Upload preview" className="max-h-48 rounded" />
             ) : (
-              <span>{file ? file.name : "Click to choose an image or PDF"}</span>
+              <span>
+                {importingCsv
+                  ? "Importing trips…"
+                  : file
+                    ? file.name
+                    : "Choose an image/PDF or Amazon Relay CSV"}
+              </span>
             )}
           </label>
           <div className="mt-2 flex justify-end">
@@ -1121,7 +1271,7 @@ function NewLoadModal({
       delivery_date: "",
       commodity: "",
       weight: "",
-      equipment_type: "Dry van",
+      equipment_type: "Power only",
       miles: "",
       rate: "",
       driver_pay: "",
