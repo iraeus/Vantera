@@ -1553,6 +1553,12 @@ function NewLoadModal({
     }
     return { ...base, ...initial };
   });
+  const [cutManuallySet, setCutManuallySet] = useState(() => {
+    const rate = Number(existing?.rate ?? initial?.rate ?? 0);
+    const driverPay = Number(existing?.driver_pay ?? initial?.driver_pay ?? 0);
+    const cut = Number(existing?.cut ?? initial?.cut ?? 0);
+    return Boolean(existing || initial?.cut) && cut !== rate - driverPay;
+  });
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
   const [pickupAddr, setPickupAddr] = useState(
@@ -1563,6 +1569,19 @@ function NewLoadModal({
   );
   const [autoMiles, setAutoMiles] = useState<string | null>(null);
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setFinancial = (k: "rate" | "driver_pay") => (v: string) => {
+    setCutManuallySet(false);
+    setForm((current) => {
+      const next = { ...current, [k]: v };
+      const rate = next.rate.trim() ? Number(next.rate) : null;
+      const driverPay = next.driver_pay.trim() ? Number(next.driver_pay) : null;
+      next.cut =
+        rate !== null && driverPay !== null && Number.isFinite(rate) && Number.isFinite(driverPay)
+          ? (rate - driverPay).toFixed(2)
+          : "";
+      return next;
+    });
+  };
   const isAmazon = /amazon/i.test(brokers.find((b) => b.id === form.broker_id)?.name ?? "");
   const selectedDriver = drivers.find((driver) => driver.id === form.driver_id);
   const selectedDriverIssues = selectedDriver ? safetyIssues(selectedDriver) : [];
@@ -1814,14 +1833,34 @@ function NewLoadModal({
             set("miles")(v);
           }}
         />
-        <TextInput label="Rate ($)" type="number" value={form.rate} onChange={set("rate")} />
+        <TextInput
+          label="Rate ($)"
+          type="number"
+          value={form.rate}
+          onChange={setFinancial("rate")}
+        />
         <TextInput
           label="Driver pay ($)"
           type="number"
           value={form.driver_pay}
-          onChange={set("driver_pay")}
+          onChange={setFinancial("driver_pay")}
         />
-        <TextInput label="CUT ($)" type="number" value={form.cut} onChange={set("cut")} />
+        <div>
+          <TextInput
+            label={cutManuallySet ? "CUT ($ · manual)" : "CUT ($ · rate − driver pay)"}
+            type="number"
+            value={form.cut}
+            onChange={(value) => {
+              setCutManuallySet(true);
+              set("cut")(value);
+            }}
+          />
+          <p className="mt-1 text-[10px] text-mut">
+            {form.rate.trim() && form.driver_pay.trim()
+              ? `Calculated: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}. You can override CUT.`
+              : "Enter rate and driver pay to calculate company CUT."}
+          </p>
+        </div>
         <div className="col-span-full">
           <TextInput label="Notes" value={form.notes} onChange={set("notes")} />
         </div>
