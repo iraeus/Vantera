@@ -78,7 +78,7 @@ export const createStaffUser = createServerFn({ method: "POST" })
   .inputValidator(
     (data: {
       username: string;
-      email: string;
+      email?: string;
       password: string;
       fullName: string;
       jobTitle?: string;
@@ -91,7 +91,7 @@ export const createStaffUser = createServerFn({ method: "POST" })
             .trim()
             .toLowerCase()
             .regex(/^[a-z0-9._-]{3,32}$/),
-          email: z.string().email(),
+          email: z.string().trim().email().or(z.literal("")).optional(),
           password: z.string().min(8),
           fullName: z.string().min(1),
           jobTitle: z.string().optional(),
@@ -112,18 +112,20 @@ export const createStaffUser = createServerFn({ method: "POST" })
       .maybeSingle();
     if (usernameError) throw new Error(usernameError.message);
     if (existingUsername) throw new Error("That username is already in use.");
+    const username = data.username.trim().toLowerCase();
+    const accountEmail = data.email?.trim() || `${username}@login.vantera.invalid`;
     const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
-      email: data.email,
+      email: accountEmail,
       password: data.password,
       email_confirm: true,
-      user_metadata: { full_name: data.fullName, username: data.username.trim().toLowerCase() },
+      user_metadata: { full_name: data.fullName, username },
     });
     if (error) throw new Error(error.message);
 
     const userId = created.user.id;
     const { error: profileError } = await supabaseAdmin
       .from("profiles")
-      .update({ username: data.username.trim().toLowerCase(), job_title: data.jobTitle ?? null })
+      .update({ username, job_title: data.jobTitle ?? null })
       .eq("id", userId);
     if (profileError) {
       await supabaseAdmin.auth.admin.deleteUser(userId);
@@ -223,7 +225,7 @@ export const updateStaff = createServerFn({ method: "POST" })
             .toLowerCase()
             .regex(/^[a-z0-9._-]{3,32}$/),
           fullName: z.string().min(1),
-          email: z.string().email(),
+          email: z.string().trim().email().or(z.literal("")),
           phone: z.string().optional(),
           jobTitle: z.string().optional(),
           department: z.string().optional(),
@@ -242,18 +244,20 @@ export const updateStaff = createServerFn({ method: "POST" })
       .maybeSingle();
     if (usernameError) throw new Error(usernameError.message);
     if (existingUsername) throw new Error("That username is already in use.");
+    const username = data.username.trim().toLowerCase();
+    const accountEmail = data.email.trim() || `${username}@login.vantera.invalid`;
     const { error: e1 } = await supabaseAdmin.auth.admin.updateUserById(data.userId, {
-      email: data.email,
+      email: accountEmail,
       email_confirm: true,
-      user_metadata: { full_name: data.fullName, username: data.username.trim().toLowerCase() },
+      user_metadata: { full_name: data.fullName, username },
     });
     if (e1) throw new Error(e1.message);
     const { error } = await supabaseAdmin
       .from("profiles")
       .update({
         full_name: data.fullName,
-        email: data.email,
-        username: data.username.trim().toLowerCase(),
+        email: accountEmail,
+        username,
         phone: data.phone || null,
         job_title: data.jobTitle || null,
         department: data.department || null,

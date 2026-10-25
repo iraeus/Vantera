@@ -42,6 +42,8 @@ export const Route = createFileRoute("/_authenticated/staff")({
 });
 
 const roleOpts = APP_ROLES.map((r) => ({ value: r, text: label(r) }));
+const staffEmail = (email: string | null, missing = "—") =>
+  email?.endsWith("@login.vantera.invalid") ? missing : email || missing;
 
 function StaffPage() {
   const [tab, setTab] = useState<"staff" | "perms">("staff");
@@ -168,7 +170,7 @@ function StaffList() {
                   shown.map((p) => ({
                     Name: p.full_name,
                     Username: p.username,
-                    Email: p.email,
+                    Email: staffEmail(p.email, ""),
                     Phone: p.phone,
                     Title: p.job_title,
                     Department: p.department,
@@ -216,7 +218,7 @@ function StaffList() {
                     {p.id === me?.id && <span className="ml-1 text-mut">(you)</span>}
                   </td>
                   <td className="px-4 py-2.5 font-mono">{p.username ?? "—"}</td>
-                  <td className="px-4 py-2.5">{p.email}</td>
+                  <td className="px-4 py-2.5">{staffEmail(p.email, "Not provided")}</td>
                   <td className="px-4 py-2.5">{p.phone ?? "—"}</td>
                   <td className="px-4 py-2.5">{p.job_title ?? "—"}</td>
                   <td className="px-4 py-2.5">{p.department ?? "—"}</td>
@@ -314,7 +316,10 @@ function NewStaff({ onClose, onDone }: { onClose: () => void; onDone: () => void
           onChange={set("username")}
           required
         />
-        <TextInput label="Email *" type="email" value={f.email} onChange={set("email")} required />
+        <TextInput label="Email (optional)" type="email" value={f.email} onChange={set("email")} />
+        <p className="-mt-2 text-[11px] text-mut">
+          Leave blank for username-only sign-in. An admin can reset the password if needed.
+        </p>
         <TextInput
           label="Temporary password * (min 8)"
           type="password"
@@ -347,7 +352,7 @@ function EditStaff({
   const [f, setF] = useState({
     fullName: p.full_name ?? "",
     username: p.username ?? "",
-    email: p.email ?? "",
+    email: p.email?.endsWith("@login.vantera.invalid") ? "" : (p.email ?? ""),
     phone: p.phone ?? "",
     jobTitle: p.job_title ?? "",
     department: p.department ?? "",
@@ -355,7 +360,7 @@ function EditStaff({
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof f) => (v: string) => setF((s) => ({ ...s, [k]: v }));
   return (
-    <Modal title={`Edit ${p.full_name ?? p.email}`} onClose={onClose}>
+    <Modal title={`Edit ${p.full_name ?? p.username ?? "staff member"}`} onClose={onClose}>
       <form
         className="space-y-3"
         onSubmit={async (e) => {
@@ -379,7 +384,10 @@ function EditStaff({
           onChange={set("username")}
           required
         />
-        <TextInput label="Email *" type="email" value={f.email} onChange={set("email")} required />
+        <TextInput label="Email (optional)" type="email" value={f.email} onChange={set("email")} />
+        <p className="-mt-2 text-[11px] text-mut">
+          Leave blank to remove email sign-in and use the username only.
+        </p>
         <TextInput label="Phone" value={f.phone} onChange={set("phone")} />
         <TextInput label="Job title" value={f.jobTitle} onChange={set("jobTitle")} />
         <TextInput label="Department" value={f.department} onChange={set("department")} />
@@ -398,7 +406,10 @@ function ResetPw({ p, onClose }: { p: Profile; onClose: () => void }) {
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   return (
-    <Modal title={`Reset password — ${p.full_name ?? p.email}`} onClose={onClose}>
+    <Modal
+      title={`Reset password — ${p.full_name ?? p.username ?? "staff member"}`}
+      onClose={onClose}
+    >
       <form
         className="space-y-3"
         onSubmit={async (e) => {
