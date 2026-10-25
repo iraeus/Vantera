@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -185,6 +185,7 @@ const LOAD_BOOLEAN_COLUMNS = new Set(["is_problem"]);
 
 function LoadBoard() {
   const { open } = Route.useSearch();
+  const navigate = useNavigate();
   const { data: allLoads = [], isLoading } = useAllLoads();
   const loads = useMemo(() => allLoads.filter((l) => !l.deleted_at), [allLoads]);
   const deletedLoads = useMemo(() => allLoads.filter((l) => l.deleted_at), [allLoads]);
@@ -215,10 +216,16 @@ function LoadBoard() {
   const [cancellingLoad, setCancellingLoad] = useState(false);
 
   useEffect(() => {
-    // Deep links should initialize the drawer once per URL change. Reapplying `open` every
-    // time loads refresh would switch away from the load the user is editing or assigning.
-    if (open) setSelectedId(open);
-  }, [open]);
+    // Consume load deep links once. Leaving `?open=...` in the URL makes a browser refresh
+    // reopen the old drawer beside whichever filters the user currently has selected.
+    if (!open) return;
+    setSelectedId(open);
+    setFilter("all");
+    setDriverFilter("all");
+    setDateFilter("all");
+    setSearch("");
+    void navigate({ to: "/loads", search: {}, replace: true });
+  }, [open, navigate]);
 
   const driverName = (id: string | null) => drivers.find((d) => d.id === id)?.full_name ?? "—";
   const dispatcherName = (id: string | null) => {
