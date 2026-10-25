@@ -77,6 +77,112 @@ const FILTERS = [
   { key: "deleted", text: "Deleted" },
 ] as const;
 
+type DateFilter = "amazon_week" | "day" | "all";
+type LoadSort = "newest" | "oldest";
+
+function dayKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function weekStartKey(date: Date) {
+  const sunday = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  sunday.setDate(sunday.getDate() - sunday.getDay());
+  return dayKey(sunday);
+}
+
+function addDaysToKey(value: string, days: number) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year ?? 2000, (month ?? 1) - 1, day ?? 1);
+  date.setDate(date.getDate() + days);
+  return dayKey(date);
+}
+
+function displayDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year ?? 2000, (month ?? 1) - 1, day ?? 1).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+const LOAD_BACKUP_COLUMNS = [
+  "id",
+  "load_number",
+  "status",
+  "driver_id",
+  "dispatcher_id",
+  "broker_id",
+  "customer_name",
+  "shipper",
+  "consignee",
+  "pickup_location",
+  "pickup_address",
+  "pickup_date",
+  "pickup_time",
+  "pickup_eta",
+  "pickup_arrived_at",
+  "pickup_departed_at",
+  "delivery_location",
+  "delivery_address",
+  "delivery_date",
+  "delivery_time",
+  "delivery_eta",
+  "delivery_arrived_at",
+  "delivery_departed_at",
+  "commodity",
+  "weight",
+  "pieces",
+  "equipment_type",
+  "truck_id",
+  "trailer_id",
+  "miles",
+  "deadhead_miles",
+  "rate",
+  "fuel_surcharge",
+  "detention",
+  "layover",
+  "other_charges",
+  "driver_pay",
+  "cut",
+  "tonu_amount",
+  "invoice_number",
+  "invoice_date",
+  "paid_date",
+  "delivered_at",
+  "current_location",
+  "last_location_update",
+  "eta",
+  "next_update_at",
+  "is_problem",
+  "problem_note",
+  "special_instructions",
+  "notes",
+  "created_by",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+  "deleted_by",
+] as const;
+
+const LOAD_NUMBER_COLUMNS = new Set([
+  "weight",
+  "pieces",
+  "miles",
+  "deadhead_miles",
+  "rate",
+  "fuel_surcharge",
+  "detention",
+  "layover",
+  "other_charges",
+  "driver_pay",
+  "cut",
+  "tonu_amount",
+]);
+const LOAD_BOOLEAN_COLUMNS = new Set(["is_problem"]);
+
 function LoadBoard() {
   const { open } = Route.useSearch();
   const { data: allLoads = [], isLoading } = useAllLoads();
@@ -93,6 +199,11 @@ function LoadBoard() {
 
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [driverFilter, setDriverFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("amazon_week");
+  const [weekStart, setWeekStart] = useState(() => weekStartKey(new Date()));
+  const [dayFilter, setDayFilter] = useState(() => dayKey(new Date()));
+  const [loadSort, setLoadSort] = useState<LoadSort>("newest");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -118,57 +229,65 @@ function LoadBoard() {
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return (filter === "deleted" ? deletedLoads : loads).filter((l) => {
-      if (filter === "active" && !ACTIVE_STATUSES.includes(l.status)) return false;
-      if (filter === "in_transit" && l.status !== "in_transit") return false;
-      if (filter === "delivered" && !["delivered", "pod_received", "paid"].includes(l.status))
-        return false;
-      if (filter === "problem" && !l.is_problem && l.status !== "problem") return false;
-      if (!q) return true;
-      return [l.load_number, l.pickup_location, l.delivery_location, l.customer_name, l.commodity]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(q));
-    });
-  }, [loads, deletedLoads, filter, search]);
+    return (filter === "deleted" ? deletedLoads : loads)
+      .filter((l) => {
+        if (filter === "active" && !ACTIVE_STATUSES.includes(l.status)) return false;
+        if (filter === "in_transit" && l.status !== "in_transit") return false;
+        if (filter === "delivered" && !["delivered", "pod_received", "paid"].includes(l.status))
+          return false;
+        if (filter === "problem" && !l.is_problem && l.status !== "problem") return false;
+        if (driverFilter !== "all" && l.driver_id !== driverFilter) return false;
+        const loadDay = (l.pickup_date ?? l.created_at).slice(0, 10);
+        if (
+          dateFilter === "amazon_week" &&
+          (loadDay < weekStart || loadDay > addDaysToKey(weekStart, 6))
+        )
+          return false;
+        if (dateFilter === "day" && loadDay !== dayFilter) return false;
+        if (!q) return true;
+        return [l.load_number, l.pickup_location, l.delivery_location, l.customer_name, l.commodity]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q));
+      })
+      .sort((a, b) => {
+        const aDate = (a.pickup_date ?? a.created_at).slice(0, 10);
+        const bDate = (b.pickup_date ?? b.created_at).slice(0, 10);
+        return loadSort === "newest" ? bDate.localeCompare(aDate) : aDate.localeCompare(bDate);
+      });
+  }, [
+    loads,
+    deletedLoads,
+    filter,
+    search,
+    driverFilter,
+    dateFilter,
+    weekStart,
+    dayFilter,
+    loadSort,
+  ]);
 
   const selected = allLoads.find((l) => l.id === selectedId) ?? null;
 
-  function exportCsv() {
-    const header = [
-      "Load",
-      "Status",
-      "Pickup",
-      "Delivery",
-      "Driver",
-      "Truck",
-      "Miles",
-      "Revenue",
-      "CUT",
-      "Dispatcher",
-    ].join(",");
-    const body = rows
-      .map((l) =>
-        [
-          l.load_number,
-          l.status,
-          l.pickup_location ?? "",
-          l.delivery_location ?? "",
-          driverName(l.driver_id),
-          truckNumber(l.truck_id),
-          l.miles ?? "",
-          loadRevenue(l),
-          l.cut,
-          dispatcherName(l.dispatcher_id),
-        ]
-          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-          .join(","),
-      )
-      .join("\n");
-    const blob = new Blob([`${header}\n${body}`], { type: "text/csv" });
+  function exportCsv(backupAll = false) {
+    const exportRows = backupAll ? allLoads : rows;
+    if (!exportRows.length) return void toast.error("There are no loads to export");
+    const columns = LOAD_BACKUP_COLUMNS.filter((column) => allLoads.some((load) => column in load));
+    const body = [
+      columns,
+      ...exportRows.map((load) =>
+        columns.map((column) => {
+          const value = load[column as keyof Load];
+          return value == null ? "\\N" : String(value);
+        }),
+      ),
+    ]
+      .map((record) => record.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const blob = new Blob([`\uFEFF${body}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "loads.csv";
+    a.download = `vantera-loads-${backupAll ? "full-backup" : "filtered"}-${dayKey(new Date())}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -336,7 +455,8 @@ function LoadBoard() {
               placeholder="Search loads, cities, customers…"
               className="h-8 w-full min-w-0 rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line placeholder:text-mut focus:ring-accent/40 focus:outline-none sm:w-64"
             />
-            <GhostButton onClick={exportCsv}>Export</GhostButton>
+            <GhostButton onClick={() => exportCsv()}>Export filtered</GhostButton>
+            <GhostButton onClick={() => exportCsv(true)}>Backup all loads</GhostButton>
             {me?.canWrite && (
               <GhostButton onClick={() => setImporting(true)}>Import / CSV</GhostButton>
             )}
@@ -363,10 +483,93 @@ function LoadBoard() {
             ))}
           </div>
 
+          <div className="flex flex-wrap items-end gap-3 border-b border-line bg-panel2/40 px-4 py-3">
+            <label className="min-w-44 flex-1 sm:flex-none">
+              <span className="font-mono text-[9px] tracking-[0.12em] text-mut uppercase">
+                Driver
+              </span>
+              <select
+                value={driverFilter}
+                onChange={(event) => setDriverFilter(event.target.value)}
+                className="mt-1 h-9 w-full rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line focus:outline-none sm:w-52"
+              >
+                <option value="all">All drivers</option>
+                {drivers
+                  .slice()
+                  .sort((a, b) => a.full_name.localeCompare(b.full_name))
+                  .map((driver) => (
+                    <option key={driver.id} value={driver.id}>
+                      {driver.full_name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="min-w-36 flex-1 sm:flex-none">
+              <span className="font-mono text-[9px] tracking-[0.12em] text-mut uppercase">
+                Date filter
+              </span>
+              <select
+                value={dateFilter}
+                onChange={(event) => setDateFilter(event.target.value as DateFilter)}
+                className="mt-1 h-9 w-full rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line focus:outline-none sm:w-40"
+              >
+                <option value="amazon_week">Amazon Relay week</option>
+                <option value="day">Exact day</option>
+                <option value="all">All dates</option>
+              </select>
+            </label>
+            {dateFilter === "amazon_week" && (
+              <div className="flex h-9 items-center gap-2 rounded-lg bg-ink px-1.5 ring-1 ring-line">
+                <button
+                  type="button"
+                  onClick={() => setWeekStart((week) => addDaysToKey(week, -7))}
+                  aria-label="Previous Amazon Relay week"
+                  className="grid h-7 w-7 place-items-center rounded-md text-mut hover:bg-panel2 hover:text-fg"
+                >
+                  ‹
+                </button>
+                <span className="min-w-28 text-center text-xs text-fg">
+                  {displayDate(weekStart)} – {displayDate(addDaysToKey(weekStart, 6))}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setWeekStart((week) => addDaysToKey(week, 7))}
+                  aria-label="Next Amazon Relay week"
+                  className="grid h-7 w-7 place-items-center rounded-md text-mut hover:bg-panel2 hover:text-fg"
+                >
+                  ›
+                </button>
+              </div>
+            )}
+            {dateFilter === "day" && (
+              <input
+                aria-label="Exact load date"
+                type="date"
+                value={dayFilter}
+                onChange={(event) => setDayFilter(event.target.value)}
+                className="h-9 rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line focus:outline-none"
+              />
+            )}
+            <label className="min-w-36 flex-1 sm:ml-auto sm:flex-none">
+              <span className="font-mono text-[9px] tracking-[0.12em] text-mut uppercase">
+                Sort by date
+              </span>
+              <select
+                value={loadSort}
+                onChange={(event) => setLoadSort(event.target.value as LoadSort)}
+                className="mt-1 h-9 w-full rounded-lg bg-ink px-3 text-xs text-fg ring-1 ring-line focus:outline-none sm:w-44"
+              >
+                <option value="newest">Newest pickup first</option>
+                <option value="oldest">Oldest pickup first</option>
+              </select>
+            </label>
+          </div>
+
           <div className="overflow-x-auto">
-            <div className="grid h-9 min-w-[940px] grid-cols-[100px_1.3fr_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 border-b border-line px-4 font-mono text-[10px] tracking-[0.12em] text-mut uppercase">
+            <div className="grid h-9 min-w-[1040px] grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 border-b border-line px-4 font-mono text-[10px] tracking-[0.12em] text-mut uppercase">
               <span>Ref</span>
               <span>Origin → Dest</span>
+              <span>Date</span>
               <span>Truck / Trail</span>
               <span>Driver</span>
               <span>Dispatch</span>
@@ -376,7 +579,7 @@ function LoadBoard() {
               <span>Status</span>
             </div>
 
-            <div className="min-w-[940px] divide-y divide-line">
+            <div className="min-w-[1040px] divide-y divide-line">
               {isLoading && <EmptyRow text="Loading loads…" />}
               {!isLoading && rows.length === 0 && (
                 <EmptyRow text="No loads match this view. Create one to get started." />
@@ -385,13 +588,16 @@ function LoadBoard() {
                 <button
                   key={l.id}
                   onClick={() => setSelectedId(l.id)}
-                  className={`grid h-11 w-full grid-cols-[100px_1.3fr_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 px-4 text-left hover:bg-panel2 ${
+                  className={`grid h-11 w-full grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 px-4 text-left hover:bg-panel2 ${
                     selectedId === l.id ? "bg-panel2" : ""
                   }`}
                 >
                   <span className="font-mono text-xs text-fg">{l.load_number}</span>
                   <span className="truncate text-fg">
                     {l.pickup_location ?? "—"} → {l.delivery_location ?? "—"}
+                  </span>
+                  <span className="num font-mono text-[10px] text-mut">
+                    {(l.pickup_date ?? l.created_at).slice(0, 10)}
                   </span>
                   <span className="num truncate font-mono text-xs text-mut">
                     {truckNumber(l.truck_id)} / {trailerNumber(l.trailer_id)}
@@ -571,8 +777,8 @@ function LoadDrawer({
   const { data: events = [] } = useLoadEvents(load.id);
 
   return (
-    <aside className="drawer-in flex w-96 shrink-0 flex-col self-start rounded-xl bg-panel ring-1 ring-line">
-      <div className="flex h-12 items-center gap-2.5 border-b border-line px-4">
+    <aside className="drawer-in sticky top-2 flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-96 max-w-[calc(100vw-1rem)] shrink-0 flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20">
+      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
         <span className="font-mono text-xs text-mut">{load.load_number}</span>
         <StatusPill status={load.is_problem ? "problem" : load.status} />
         <button onClick={onClose} className="ml-auto font-mono text-xs text-mut hover:text-fg">
@@ -580,7 +786,7 @@ function LoadDrawer({
         </button>
       </div>
 
-      <div className="space-y-4 p-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4">
         <div>
           <div className="font-display text-lg font-semibold tracking-tight text-fg">
             {load.pickup_location ?? "—"} → {load.delivery_location ?? "—"}
@@ -683,24 +889,6 @@ function LoadDrawer({
         )}
 
         {canWrite && !load.deleted_at && (
-          <button
-            onClick={onEdit}
-            className="w-full rounded-lg bg-accent/12 px-3 py-2 text-xs font-medium text-accent ring-1 ring-accent/30 hover:bg-accent/20"
-          >
-            Edit load
-          </button>
-        )}
-
-        {canWrite && !load.deleted_at && (
-          <button
-            onClick={onDelete}
-            className="w-full rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive ring-1 ring-destructive/30 hover:bg-destructive/20"
-          >
-            Delete load
-          </button>
-        )}
-
-        {canWrite && !load.deleted_at && (
           <Section title="Move status">
             <div className="flex flex-wrap gap-1.5">
               {LOAD_STATUSES.map((s) => (
@@ -740,6 +928,22 @@ function LoadDrawer({
           </Section>
         )}
       </div>
+      {canWrite && !load.deleted_at && (
+        <div className="shrink-0 space-y-2 border-t border-line bg-panel px-3 py-3">
+          <button
+            onClick={onEdit}
+            className="w-full rounded-lg bg-accent/12 px-3 py-2.5 text-xs font-semibold text-accent ring-1 ring-accent/30 hover:bg-accent/20"
+          >
+            Edit load
+          </button>
+          <button
+            onClick={onDelete}
+            className="w-full rounded-lg bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive ring-1 ring-destructive/30 hover:bg-destructive/20"
+          >
+            Delete load
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
@@ -917,6 +1121,53 @@ function parseCsv(input: string): Record<string, string>[] {
     );
 }
 
+async function restoreLoadBackup(rows: Record<string, string>[], headers: string[]) {
+  const columns = headers.filter((header) =>
+    LOAD_BACKUP_COLUMNS.includes(header as (typeof LOAD_BACKUP_COLUMNS)[number]),
+  );
+  if (!columns.includes("id") || !columns.includes("load_number")) {
+    throw new Error("This backup needs both id and load_number columns");
+  }
+  const payload = rows.map((row, rowIndex) => {
+    const restored: Record<string, string | number | boolean | null> = {};
+    for (const column of columns) {
+      const raw = row[column];
+      if (raw === undefined) continue;
+      if (raw === "\\N") {
+        restored[column] = null;
+      } else if (LOAD_NUMBER_COLUMNS.has(column)) {
+        if (!raw.trim()) {
+          restored[column] = null;
+          continue;
+        }
+        const value = Number(raw.replace(/[$,\s]/g, ""));
+        if (!Number.isFinite(value))
+          throw new Error(`Invalid ${column} value on CSV row ${rowIndex + 2}`);
+        restored[column] = value;
+      } else if (LOAD_BOOLEAN_COLUMNS.has(column)) {
+        restored[column] = ["true", "t", "1", "yes"].includes(raw.trim().toLowerCase());
+      } else {
+        restored[column] = raw;
+      }
+    }
+    if (typeof restored["id"] !== "string" || !restored["id"].trim()) {
+      throw new Error(`Missing load id on CSV row ${rowIndex + 2}`);
+    }
+    if (typeof restored["load_number"] !== "string" || !restored["load_number"].trim()) {
+      throw new Error(`Missing load number on CSV row ${rowIndex + 2}`);
+    }
+    return restored;
+  });
+
+  for (let offset = 0; offset < payload.length; offset += 100) {
+    const { error } = await supabase
+      .from("loads")
+      .upsert(payload.slice(offset, offset + 100) as never, { onConflict: "id" });
+    if (error) throw new Error(`Backup restore stopped after ${offset} rows: ${error.message}`);
+  }
+  return payload.length;
+}
+
 function ImportModal({
   brokers,
   onClose,
@@ -1002,6 +1253,17 @@ function ImportModal({
       const firstRow = rows[0];
       if (!firstRow) throw new Error("The CSV has no data rows");
       const headers = Object.keys(firstRow);
+      const normalizedHeaders = headers.map(normalizeCsvHeader);
+      if (normalizedHeaders.includes("id") && normalizedHeaders.includes("loadnumber")) {
+        const backupCount = await restoreLoadBackup(rows, headers);
+        await qc.invalidateQueries({ queryKey: ["loads"] });
+        await qc.invalidateQueries({ queryKey: ["loads", "all"] });
+        toast.success(
+          `Restored ${backupCount} loads from the Vantera backup. Matching load IDs were updated; missing loads were recreated.`,
+        );
+        onClose();
+        return;
+      }
       const col = (aliases: string[]) =>
         headers.find((h) => aliases.includes(normalizeCsvHeader(h)));
       const tripCol = col(["tripid"]);
@@ -1186,9 +1448,9 @@ function ImportModal({
       ) : (
         <>
           <p className="mb-2 text-xs text-mut">
-            Upload a rate confirmation or Amazon Relay screenshot/PDF and AI will read the broker
-            (from the logo), the load ID, stops, addresses, times, miles, rate, trailer and driver.
-            You can review and edit before saving.
+            Select an Amazon Relay CSV to add trip summaries automatically, or import a Vantera
+            loads backup CSV to restore complete load records. Other files can be scanned from a
+            rate confirmation or Relay screenshot/PDF, then reviewed before saving.
           </p>
           <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-line bg-ink p-4 text-xs text-mut hover:text-fg">
             <input

@@ -4,7 +4,15 @@ export function Panel({ children, className = "" }: { children: ReactNode; class
   return <div className={`rounded-xl bg-panel ring-1 ring-line ${className}`}>{children}</div>;
 }
 
-export function PanelHeader({ title, count, children }: { title: string; count?: string; children?: ReactNode }) {
+export function PanelHeader({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: string;
+  children?: ReactNode;
+}) {
   return (
     <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2">
       <span className="font-display text-sm font-semibold tracking-tight">{title}</span>
@@ -85,15 +93,17 @@ export function Modal({
   wide?: boolean;
 }) {
   return (
-    <div className="modal-backdrop-enter fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/80 p-6">
-      <div className={`modal-dialog-enter w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl bg-panel ring-1 ring-line`}>
-        <div className="flex h-12 items-center border-b border-line px-4">
+    <div className="modal-backdrop-enter fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-ink/80 p-3 sm:p-6">
+      <div
+        className={`modal-dialog-enter my-auto flex max-h-[calc(100dvh-1.5rem)] w-full ${wide ? "max-w-3xl" : "max-w-md"} flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20`}
+      >
+        <div className="flex h-12 shrink-0 items-center border-b border-line px-4">
           <span className="font-display text-sm font-semibold tracking-tight">{title}</span>
           <button onClick={onClose} className="ml-auto font-mono text-xs text-mut hover:text-fg">
             ESC
           </button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className="min-h-0 overflow-y-auto overscroll-contain p-4">{children}</div>
       </div>
     </div>
   );
