@@ -1,0 +1,34 @@
+{
+  "name": "vantera-tms-desktop",
+  "version": "1.0.0",
+  "description": "Vantera TMS desktop app for Windows",
+  "main": "main.js",
+  "author": "Vantera",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "33.2.0",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.vantera.tms",
+    "productName": "Vantera TMS",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "setup.html", "offline.html", "config.json", "build/icon.png"],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Vantera-Setup.${ext}"
+    }
+  }
+}

@@ -1,0 +1,200 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Vantera TMS design system — dispatch control room.
+ * All colors are oklch tokens. Never hardcode colors in components.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--panel2);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--background);
+  --color-secondary: var(--panel2);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--panel2);
+  --color-muted-foreground: var(--mut);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--background);
+  --color-destructive: var(--problem);
+  --color-destructive-foreground: var(--foreground);
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent);
+
+  --color-ink: var(--background);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-line: var(--line);
+  --color-fg: var(--foreground);
+  --color-mut: var(--mut);
+  --color-delivered: var(--delivered);
+  --color-transit: var(--transit);
+  --color-problem: var(--problem);
+
+  /* System fonts: nothing to download, so the app is fast on every computer. */
+  --font-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+:root {
+  --radius: 0.75rem;
+  color-scheme: dark;
+  /* DARK (default): midnight navy surfaces, electric blue actions, mint success. */
+  --background: oklch(0.17 0.035 250);
+  --panel: oklch(0.215 0.04 250);
+  --panel2: oklch(0.255 0.045 250);
+  --card: oklch(0.215 0.04 250);
+  --line: oklch(0.34 0.045 245);
+  --foreground: oklch(0.95 0.012 225);
+  --mut: oklch(0.7 0.03 230);
+  --accent: oklch(0.76 0.14 220);
+  --delivered: oklch(0.77 0.15 155);
+  --transit: oklch(0.83 0.15 78);
+  --problem: oklch(0.71 0.17 25);
+}
+
+/* MID: a softer slate theme between dark and light (less glare, still easy to read). */
+:root[data-theme="mid"] {
+  color-scheme: dark;
+  --background: oklch(0.37 0.04 250);
+  --panel: oklch(0.42 0.045 250);
+  --panel2: oklch(0.47 0.05 250);
+  --card: oklch(0.42 0.045 250);
+  --line: oklch(0.59 0.04 245);
+  --foreground: oklch(0.985 0.006 225);
+  --mut: oklch(0.9 0.018 225);
+  --accent: oklch(0.86 0.1 220);
+  --delivered: oklch(0.9 0.13 160);
+  --transit: oklch(0.93 0.13 88);
+  --problem: oklch(0.915 0.1 25);
+}
+
+/* LIGHT: clean cool-white surfaces with a deeper teal accent. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: oklch(0.975 0.012 235);
+  --panel: oklch(1 0 0);
+  --panel2: oklch(0.95 0.02 230);
+  --card: oklch(1 0 0);
+  --line: oklch(0.89 0.025 235);
+  --foreground: oklch(0.24 0.035 250);
+  --mut: oklch(0.48 0.03 240);
+  --accent: oklch(0.49 0.16 230);
+  --delivered: oklch(0.5 0.13 160);
+  --transit: oklch(0.54 0.13 62);
+  --problem: oklch(0.54 0.19 25);
+}
+
+/* Text size: Display menu > Text size. Everything scales because sizes are in rem. */
+:root[data-density="compact"] { font-size: 14px; }
+:root[data-density="large"] { font-size: 18px; }
+
+/* Softer dim behind pop-ups on the Light and Mid themes. */
+:root[data-theme="light"] :is(.bg-ink\/60, .bg-ink\/70, .bg-ink\/80) { background-color: rgb(15 23 42 / 0.4); }
+:root[data-theme="mid"] :is(.bg-ink\/60, .bg-ink\/70, .bg-ink\/80) { background-color: rgb(12 18 28 / 0.55); }
+:root[data-theme="light"] .rounded-xl.bg-panel { box-shadow: 0 1px 2px rgb(15 23 42 / 0.05); }
+
+/* Printing: always black on white, no menus. */
+@media print {
+  :root, :root[data-theme] {
+    color-scheme: light;
+    --background: #fff; --panel: #fff; --panel2: #f3f4f6; --card: #fff; --line: #d1d5db;
+    --foreground: #111827; --mut: #4b5563; --accent: #1d4ed8; --delivered: #047857; --transit: #b45309; --problem: #b91c1c;
+    font-size: 12px;
+  }
+  aside, header, .no-print { display: none !important; }
+  main { padding: 0 !important; }
+  body { background: #fff !important; }
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes rowflash {
+  0% {
+    background-color: color-mix(in oklab, var(--accent) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@keyframes slidein {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes pulsealert {
+  0%,
+  100% {
+    background-color: color-mix(in oklab, var(--problem) 16%, transparent);
+  }
+  50% {
+    background-color: color-mix(in oklab, var(--problem) 32%, transparent);
+  }
+}
+
+@utility flash {
+  animation: rowflash 1.1s ease-out;
+}
+@utility drawer-in {
+  animation: slidein 0.18s ease-out;
+}
+@utility pulse-alert {
+  animation: pulsealert 1.6s ease-in-out infinite;
+}
+
+@keyframes pageenter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.page-enter { animation: pageenter 220ms ease-out both; }
+@keyframes modalfade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalpop { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.modal-backdrop-enter { animation: modalfade 140ms ease-out both; }
+.modal-dialog-enter { animation: modalpop 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+button:not(:disabled) { transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease, transform 150ms ease; }
+button:not(:disabled):active { transform: scale(0.98); }
+@media (prefers-reduced-motion: reduce) {
+  .page-enter, .modal-backdrop-enter, .modal-dialog-enter, .boot-pulse, .boot-slide, .pulse-alert { animation: none !important; }
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}
+
+/* Loading screen */
+@keyframes boot-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.06); opacity: 0.88; } }
+@keyframes boot-slide { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+.boot-pulse { animation: boot-pulse 1.8s ease-in-out infinite; }
+.boot-slide { animation: boot-slide 1.3s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .boot-pulse, .boot-slide { animation: none; } }

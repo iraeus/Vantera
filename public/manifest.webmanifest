@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "Vantera TMS",
+  "short_name": "Vantera",
+  "description": "Dispatch, updates, safety, fleet and billing for your trucking company.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1116",
+  "theme_color": "#1a1a1a",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Dispatch Board", "url": "/dispatch" },
+    { "name": "Update Board", "url": "/updates" },
+    { "name": "Command Center", "url": "/command" }
+  ]
+}
