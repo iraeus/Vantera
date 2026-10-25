@@ -215,8 +215,10 @@ function LoadBoard() {
   const [cancellingLoad, setCancellingLoad] = useState(false);
 
   useEffect(() => {
-    if (open && allLoads.some((load) => load.id === open)) setSelectedId(open);
-  }, [open, allLoads]);
+    // Deep links should initialize the drawer once per URL change. Reapplying `open` every
+    // time loads refresh would switch away from the load the user is editing or assigning.
+    if (open) setSelectedId(open);
+  }, [open]);
 
   const driverName = (id: string | null) => drivers.find((d) => d.id === id)?.full_name ?? "—";
   const dispatcherName = (id: string | null) => {
@@ -392,7 +394,11 @@ function LoadBoard() {
       "assigned",
       driver ? `Driver ${driver.full_name} assigned` : "Driver removed",
     );
-    queryClient.invalidateQueries();
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["loads"] }),
+      queryClient.invalidateQueries({ queryKey: ["drivers"] }),
+      queryClient.invalidateQueries({ queryKey: ["load-events", load.id] }),
+    ]);
     if (driver && safetyWarning)
       toast.warning(
         `${driver.full_name} assigned to ${load.load_number} with safety warning: ${safetyWarning}`,
