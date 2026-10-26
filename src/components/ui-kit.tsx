@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <div className={`rounded-xl bg-panel ring-1 ring-line ${className}`}>{children}</div>;
@@ -29,6 +30,7 @@ export function TextInput({
   type = "text",
   placeholder,
   required,
+  disabled,
 }: {
   label: string;
   value: string;
@@ -36,6 +38,7 @@ export function TextInput({
   type?: string;
   placeholder?: string;
   required?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <label className="block">
@@ -43,10 +46,11 @@ export function TextInput({
       <input
         type={type}
         required={required}
+        disabled={disabled}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 h-9 w-full rounded-lg bg-ink px-3 text-sm text-fg ring-1 ring-line placeholder:text-mut focus:ring-accent/40 focus:outline-none"
+        className="mt-1 h-9 w-full rounded-lg bg-ink px-3 text-sm text-fg ring-1 ring-line placeholder:text-mut focus:ring-accent/40 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       />
     </label>
   );
@@ -92,7 +96,13 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
-  return (
+  const [portalReady, setPortalReady] = useState(false);
+
+  useEffect(() => setPortalReady(true), []);
+
+  if (!portalReady) return null;
+
+  return createPortal(
     <div className="modal-backdrop-enter fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-ink/80 p-3 sm:p-6">
       <div
         className={`modal-dialog-enter my-auto flex max-h-[calc(100dvh-1.5rem)] w-full ${wide ? "max-w-3xl" : "max-w-md"} flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20`}
@@ -105,7 +115,8 @@ export function Modal({
         </div>
         <div className="min-h-0 overflow-y-auto overscroll-contain p-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -139,19 +150,22 @@ export function GhostButton({
   onClick,
   active,
   type = "button",
+  disabled,
 }: {
   children: ReactNode;
   onClick?: () => void;
   active?: boolean;
   type?: "button" | "submit";
+  disabled?: boolean;
 }) {
   return (
     <button
       type={type}
       onClick={onClick}
+      disabled={disabled}
       className={`h-8 rounded-lg px-2.5 text-xs ring-1 ring-line ${
         active ? "bg-accent/12 text-accent" : "bg-panel2 text-mut hover:text-fg"
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       {children}
     </button>

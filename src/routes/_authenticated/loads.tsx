@@ -40,6 +40,8 @@ import {
   safetyIssues,
 } from "@/lib/tms";
 import { parseAmazonLoad } from "@/lib/amazon-parse";
+import { automaticDriverDispatchState } from "@/lib/driver-dispatch";
+import { createSelectedLoadsPdf } from "@/lib/loads-pdf";
 import { useServerFn } from "@tanstack/react-start";
 import { scanLoadFile } from "@/lib/load-scan.functions";
 import {
@@ -106,6 +108,16 @@ function displayDate(value: string) {
     month: "short",
     day: "numeric",
   });
+}
+
+function loadEndDateKey(
+  load: Pick<Load, "delivered_at" | "delivery_departed_at" | "delivery_date" | "created_at">,
+) {
+  const value =
+    load.delivered_at ?? load.delivery_departed_at ?? load.delivery_date ?? load.created_at;
+  if (value.length === 10) return value;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : dayKey(date);
 }
 
 const LOAD_BACKUP_COLUMNS = [
@@ -206,6 +218,10 @@ function LoadBoard() {
   const [dayFilter, setDayFilter] = useState(() => dayKey(new Date()));
   const [loadSort, setLoadSort] = useState<LoadSort>("newest");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedLoadIds, setSelectedLoadIds] = useState<Set<string>>(() => new Set());
+  const [brokerTransferOpen, setBrokerTransferOpen] = useState(false);
+  const [bulkBrokerId, setBulkBrokerId] = useState("");
+  const [transferringBroker, setTransferringBroker] = useState(false);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
@@ -246,7 +262,7 @@ function LoadBoard() {
           return false;
         if (filter === "problem" && !l.is_problem && l.status !== "problem") return false;
         if (driverFilter !== "all" && l.driver_id !== driverFilter) return false;
-        const loadDay = (l.pickup_date ?? l.created_at).slice(0, 10);
+        const loadDay = loadEndDateKey(l);
         if (
           dateFilter === "amazon_week" &&
           (loadDay < weekStart || loadDay > addDaysToKey(weekStart, 6))
@@ -259,8 +275,8 @@ function LoadBoard() {
           .some((v) => String(v).toLowerCase().includes(q));
       })
       .sort((a, b) => {
-        const aDate = (a.pickup_date ?? a.created_at).slice(0, 10);
-        const bDate = (b.pickup_date ?? b.created_at).slice(0, 10);
+        const aDate = loadEndDateKey(a);
+        const bDate = loadEndDateKey(b);
         return loadSort === "newest" ? bDate.localeCompare(aDate) : aDate.localeCompare(bDate);
       });
   }, [
@@ -276,6 +292,126 @@ function LoadBoard() {
   ]);
 
   const selected = allLoads.find((l) => l.id === selectedId) ?? null;
+  const selectedLoads = useMemo(
+    () => allLoads.filter((load) => selectedLoadIds.has(load.id)),
+    [allLoads, selectedLoadIds],
+  );
+  const selectedActiveLoads = selectedLoads.filter((load) => !load.deleted_at);
+  const selectedVisibleCount = rows.filter((load) => selectedLoadIds.has(load.id)).length;
+  const allVisibleSelected = rows.length > 0 && selectedVisibleCount === rows.length;
+  const bulkBrokerTransferCount = selectedActiveLoads.filter(
+    (load) => load.broker_id !== bulkBrokerId,
+  ).length;
+
+  function toggleVisibleSelection() {
+    setSelectedLoadIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) rows.forEach((load) => next.delete(load.id));
+      else rows.forEach((load) => next.add(load.id));
+      return next;
+    });
+  }
+
+  function toggleLoadSelection(loadId: string) {
+    setSelectedLoadIds((current) => {
+      const next = new Set(current);
+      if (next.has(loadId)) next.delete(loadId);
+      else next.add(loadId);
+      return next;
+    });
+  }
+
+  function selectAllActiveLoads() {
+    setSelectedLoadIds(new Set(loads.map((load) => load.id)));
+  }
+
+  async function transferSelectedLoadsToBroker() {
+    const broker = brokers.find((item) => item.id === bulkBrokerId);
+    const transferLoads = selectedActiveLoads.filter((load) => load.broker_id !== bulkBrokerId);
+    if (!broker || !transferLoads.length) {
+      toast.error("Choose a broker and at least one selected load with a different broker.");
+      return;
+    }
+    setTransferringBroker(true);
+    const transferredIds: string[] = [];
+    let transferError = "";
+    for (let index = 0; index < transferLoads.length; index += 100) {
+      const batch = transferLoads.slice(index, index + 100);
+      const { data, error } = await supabase
+        .from("loads")
+        .update({ broker_id: broker.id })
+        .in(
+          "id",
+          batch.map((load) => load.id),
+        )
+        .select("id");
+      if (error) {
+        transferError = error.message;
+        break;
+      }
+      const batchIds = (data ?? []).map((row) => row.id);
+      transferredIds.push(...batchIds);
+      if (batchIds.length !== batch.length) {
+        transferError = `Only ${batchIds.length} of ${batch.length} loads in a batch were updated. Check your access and refresh the board.`;
+        break;
+      }
+    }
+    if (transferredIds.length) {
+      await Promise.all(
+        transferredIds.map((id) =>
+          logLoadEvent(id, "broker_changed", `Broker changed to ${broker.name} in a bulk transfer`),
+        ),
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["loads"] }),
+        queryClient.invalidateQueries({ queryKey: ["loads", "all"] }),
+      ]);
+      setSelectedLoadIds(
+        (current) => new Set([...current].filter((id) => !transferredIds.includes(id))),
+      );
+    }
+    setTransferringBroker(false);
+    if (transferError) {
+      toast.error(
+        transferredIds.length
+          ? `Transferred ${transferredIds.length} loads; the remaining transfer failed: ${transferError}`
+          : transferError,
+      );
+      return;
+    }
+    toast.success(`${transferredIds.length} loads transferred to ${broker.name}`);
+    setBrokerTransferOpen(false);
+    setBulkBrokerId("");
+  }
+
+  function downloadSelectedLoadsPdf() {
+    if (!selectedLoads.length) {
+      toast.error("Select at least one load to download a PDF.");
+      return;
+    }
+    const records = selectedLoads.map((load) => ({
+      loadNumber: load.load_number,
+      broker:
+        brokers.find((broker) => broker.id === load.broker_id)?.name ??
+        load.customer_name ??
+        "No broker",
+      route: `${load.pickup_location ?? "—"} -> ${load.delivery_location ?? "—"}`,
+      status: label(load.status),
+      revenue: loadRevenue(load),
+      driverPay: Number(load.driver_pay ?? 0),
+      cut: Number(load.cut ?? 0),
+      paidAmount: load.status === "paid" ? loadRevenue(load) : 0,
+      paidDate: load.paid_date ?? "",
+    }));
+    const bytes = createSelectedLoadsPdf(records, new Date().toLocaleDateString());
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vantera-selected-loads-${dayKey(new Date())}.pdf`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast.success(`PDF downloaded with ${records.length} loads`);
+  }
 
   function exportCsv(backupAll = false) {
     const exportRows = backupAll ? allLoads : rows;
@@ -317,6 +453,7 @@ function LoadBoard() {
     }
     await logLoadEvent(load.id, "status_change", `Status set to ${label(status)}`);
     queryClient.invalidateQueries({ queryKey: ["loads"] });
+    if (load.driver_id) queryClient.invalidateQueries({ queryKey: ["drivers"] });
     queryClient.invalidateQueries({ queryKey: ["load-events", load.id] });
     toast.success(`${load.load_number} → ${label(status)}`);
   }
@@ -347,6 +484,7 @@ function LoadBoard() {
       queryClient.invalidateQueries({ queryKey: ["loads"] }),
       queryClient.invalidateQueries({ queryKey: ["load-events", pendingCancellation.id] }),
       queryClient.invalidateQueries({ queryKey: ["loads", "all"] }),
+      queryClient.invalidateQueries({ queryKey: ["drivers"] }),
     ]);
     toast.success(
       amount > 0
@@ -367,7 +505,7 @@ function LoadBoard() {
       }
     }
     const patch: Partial<Load> = { driver_id: driverId };
-    if (driver && ["new", "available", "booked"].includes(load.status)) patch.status = "assigned";
+    if (driver && ["new", "available"].includes(load.status)) patch.status = "booked";
     if (driver && !load.truck_id) {
       const t = trucks.find((tr) => tr.assigned_driver_id === driver.id);
       if (t) patch.truck_id = t.id;
@@ -377,24 +515,21 @@ function LoadBoard() {
       toast.error(error.message);
       return;
     }
+    const resultingLoads = loads.map((item) =>
+      item.id === load.id
+        ? { ...item, driver_id: driverId, status: patch.status ?? item.status }
+        : item,
+    );
     if (driver)
       await supabase
         .from("drivers")
-        .update({ status: "on_load", dispatch_status: "in_transit" })
+        .update(automaticDriverDispatchState(resultingLoads, driver.id))
         .eq("id", driver.id);
     if (load.driver_id && load.driver_id !== driverId) {
-      const formerDriverHasOtherLoads = loads.some(
-        (item) =>
-          item.id !== load.id &&
-          item.driver_id === load.driver_id &&
-          ACTIVE_STATUSES.includes(item.status),
-      );
-      if (!formerDriverHasOtherLoads) {
-        await supabase
-          .from("drivers")
-          .update({ status: "available", dispatch_status: "ready" })
-          .eq("id", load.driver_id);
-      }
+      await supabase
+        .from("drivers")
+        .update(automaticDriverDispatchState(resultingLoads, load.driver_id))
+        .eq("id", load.driver_id);
     }
     await logLoadEvent(
       load.id,
@@ -452,6 +587,7 @@ function LoadBoard() {
     }
     await logLoadEvent(load.id, "deleted", "Load deleted");
     queryClient.invalidateQueries({ queryKey: ["loads"] });
+    if (load.driver_id) queryClient.invalidateQueries({ queryKey: ["drivers"] });
     queryClient.invalidateQueries({ queryKey: ["load-events", load.id] });
     setSelectedId(null);
     toast.success(`${load.load_number} moved to Deleted`);
@@ -578,56 +714,99 @@ function LoadBoard() {
             </label>
           </div>
 
+          <div className="flex flex-wrap items-center gap-2 border-y border-line/70 px-4 py-2.5">
+            <span className="font-mono text-[10px] text-mut">{selectedLoads.length} selected</span>
+            <GhostButton onClick={selectAllActiveLoads} disabled={!loads.length}>
+              Select all active loads ({loads.length})
+            </GhostButton>
+            <GhostButton
+              onClick={() => setSelectedLoadIds(new Set())}
+              disabled={!selectedLoadIds.size}
+            >
+              Clear selection
+            </GhostButton>
+            <span className="flex-1" />
+            <GhostButton onClick={downloadSelectedLoadsPdf} disabled={!selectedLoads.length}>
+              Download selected PDF
+            </GhostButton>
+            {me?.canWrite && (
+              <PrimaryButton
+                onClick={() => setBrokerTransferOpen(true)}
+                disabled={!selectedActiveLoads.length}
+              >
+                Transfer broker
+              </PrimaryButton>
+            )}
+          </div>
+
           <div className="overflow-x-auto">
-            <div className="grid h-9 min-w-[1040px] grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 border-b border-line px-4 font-mono text-[10px] tracking-[0.12em] text-mut uppercase">
-              <span>Ref</span>
-              <span>Origin → Dest</span>
-              <span>Date</span>
-              <span>Truck / Trail</span>
-              <span>Driver</span>
-              <span>Dispatch</span>
-              <span>Miles</span>
-              <span>CUT</span>
-              <span>Revenue</span>
-              <span>Status</span>
+            <div className="grid h-9 min-w-[1080px] grid-cols-[28px_minmax(0,1fr)] items-center gap-2 border-b border-line px-4 font-mono text-[10px] tracking-[0.12em] text-mut uppercase">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleVisibleSelection}
+                aria-label="Select all visible loads"
+                className="size-3.5 accent-accent"
+              />
+              <div className="grid h-full grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2">
+                <span>Ref</span>
+                <span>Origin → Dest</span>
+                <span>End date</span>
+                <span>Truck / Trail</span>
+                <span>Driver</span>
+                <span>Dispatch</span>
+                <span>Miles</span>
+                <span>CUT</span>
+                <span>Revenue</span>
+                <span>Status</span>
+              </div>
             </div>
 
-            <div className="min-w-[1040px] divide-y divide-line">
+            <div className="min-w-[1080px] divide-y divide-line">
               {isLoading && <EmptyRow text="Loading loads…" />}
               {!isLoading && rows.length === 0 && (
                 <EmptyRow text="No loads match this view. Create one to get started." />
               )}
               {rows.map((l) => (
-                <button
+                <div
                   key={l.id}
-                  onClick={() => setSelectedId(l.id)}
-                  className={`grid h-11 w-full grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 px-4 text-left hover:bg-panel2 ${
-                    selectedId === l.id ? "bg-panel2" : ""
-                  }`}
+                  className="grid min-h-11 grid-cols-[28px_minmax(0,1fr)] items-center gap-2 px-4"
                 >
-                  <span className="font-mono text-xs text-fg">{l.load_number}</span>
-                  <span className="truncate text-fg">
-                    {l.pickup_location ?? "—"} → {l.delivery_location ?? "—"}
-                  </span>
-                  <span className="num font-mono text-[10px] text-mut">
-                    {(l.pickup_date ?? l.created_at).slice(0, 10)}
-                  </span>
-                  <span className="num truncate font-mono text-xs text-mut">
-                    {truckNumber(l.truck_id)} / {trailerNumber(l.trailer_id)}
-                  </span>
-                  <span className="truncate text-mut">{driverName(l.driver_id)}</span>
-                  <span className="truncate text-mut">{dispatcherName(l.dispatcher_id)}</span>
-                  <span className="num font-mono text-xs text-mut">{l.miles ?? "—"}</span>
-                  <span className="num font-mono text-xs text-transit">{money(l.cut)}</span>
-                  <span className="num font-mono text-xs text-mut">{money(loadRevenue(l))}</span>
-                  {l.deleted_at ? (
-                    <span className="font-mono text-[10px] text-destructive uppercase">
-                      Deleted
+                  <input
+                    type="checkbox"
+                    checked={selectedLoadIds.has(l.id)}
+                    onChange={() => toggleLoadSelection(l.id)}
+                    aria-label={`Select load ${l.load_number}`}
+                    className="mx-auto size-3.5 accent-accent"
+                  />
+                  <button
+                    onClick={() => setSelectedId(l.id)}
+                    className={`grid h-11 w-full grid-cols-[100px_1.2fr_90px_100px_110px_115px_70px_75px_95px_100px] items-center gap-2 text-left hover:bg-panel2 ${
+                      selectedId === l.id ? "bg-panel2" : ""
+                    }`}
+                  >
+                    <span className="font-mono text-xs text-fg">{l.load_number}</span>
+                    <span className="truncate text-fg">
+                      {l.pickup_location ?? "—"} → {l.delivery_location ?? "—"}
                     </span>
-                  ) : (
-                    <StatusPill status={l.is_problem ? "problem" : l.status} />
-                  )}
-                </button>
+                    <span className="num font-mono text-[10px] text-mut">{loadEndDateKey(l)}</span>
+                    <span className="num truncate font-mono text-xs text-mut">
+                      {truckNumber(l.truck_id)} / {trailerNumber(l.trailer_id)}
+                    </span>
+                    <span className="truncate text-mut">{driverName(l.driver_id)}</span>
+                    <span className="truncate text-mut">{dispatcherName(l.dispatcher_id)}</span>
+                    <span className="num font-mono text-xs text-mut">{l.miles ?? "—"}</span>
+                    <span className="num font-mono text-xs text-transit">{money(l.cut)}</span>
+                    <span className="num font-mono text-xs text-mut">{money(loadRevenue(l))}</span>
+                    {l.deleted_at ? (
+                      <span className="font-mono text-[10px] text-destructive uppercase">
+                        Deleted
+                      </span>
+                    ) : (
+                      <StatusPill status={l.is_problem ? "problem" : l.status} />
+                    )}
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -682,6 +861,7 @@ function LoadBoard() {
           key={editing.id}
           brokers={brokers}
           drivers={drivers}
+          loads={loads}
           dispatchers={dispatchStaff}
           existing={editing}
           onClose={() => setEditing(null)}
@@ -697,6 +877,7 @@ function LoadBoard() {
         <NewLoadModal
           brokers={brokers}
           drivers={drivers}
+          loads={loads}
           dispatchers={dispatchStaff}
           initial={imported}
           onClose={() => setCreating(false)}
@@ -747,6 +928,48 @@ function LoadBoard() {
               </button>
               <PrimaryButton disabled={cancellingLoad} onClick={() => void confirmCancellation()}>
                 {cancellingLoad ? "Cancelling…" : "Confirm cancellation"}
+              </PrimaryButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {brokerTransferOpen && (
+        <Modal
+          title={`Transfer broker for ${selectedActiveLoads.length} selected loads`}
+          onClose={() => {
+            if (!transferringBroker) setBrokerTransferOpen(false);
+          }}
+        >
+          <div className="space-y-4">
+            <p className="text-xs text-mut">
+              Move all selected active loads to one broker. Loads already assigned to that broker
+              will be skipped.
+            </p>
+            <SelectInput
+              label="Destination broker"
+              value={bulkBrokerId}
+              onChange={setBulkBrokerId}
+              options={[
+                { value: "", text: "Choose a broker" },
+                ...brokers.map((broker) => ({ value: broker.id, text: broker.name })),
+              ]}
+            />
+            <p className="text-[11px] text-mut">
+              {bulkBrokerTransferCount} load{bulkBrokerTransferCount === 1 ? "" : "s"} will be
+              transferred.
+            </p>
+            <div className="flex justify-end gap-2 border-t border-line pt-3">
+              <GhostButton
+                disabled={transferringBroker}
+                onClick={() => setBrokerTransferOpen(false)}
+              >
+                Cancel
+              </GhostButton>
+              <PrimaryButton
+                disabled={!bulkBrokerId || !bulkBrokerTransferCount || transferringBroker}
+                onClick={() => void transferSelectedLoadsToBroker()}
+              >
+                {transferringBroker ? "Transferring…" : "Transfer selected loads"}
               </PrimaryButton>
             </div>
           </div>
@@ -1326,7 +1549,7 @@ function ImportModal({
         if (/complete|deliver/.test(value)) return "delivered";
         if (/transit|progress|started/.test(value)) return "in_transit";
         if (/paid/.test(value)) return "paid";
-        return "new";
+        return "booked";
       };
       const inserts = fresh.map((trip) => ({
         load_number: trip.id,
@@ -1517,6 +1740,7 @@ function ImportModal({
 function NewLoadModal({
   brokers,
   drivers,
+  loads,
   dispatchers,
   existing,
   initial,
@@ -1525,6 +1749,7 @@ function NewLoadModal({
 }: {
   brokers: { id: string; name: string }[];
   drivers: Driver[];
+  loads: Load[];
   dispatchers: Profile[];
   existing?: Load;
   initial?: Partial<LoadForm> | undefined;
@@ -1591,7 +1816,22 @@ function NewLoadModal({
   };
   const isAmazon = /amazon/i.test(brokers.find((b) => b.id === form.broker_id)?.name ?? "");
   const selectedDriver = drivers.find((driver) => driver.id === form.driver_id);
+  const isCompanyDriver = selectedDriver?.driver_type === "company_driver";
   const selectedDriverIssues = selectedDriver ? safetyIssues(selectedDriver) : [];
+
+  useEffect(() => {
+    if (!isCompanyDriver) return;
+    setCutManuallySet(false);
+    setForm((current) => {
+      const rate = current.rate.trim() ? Number(current.rate) : null;
+      const driverPay = current.driver_pay.trim() ? Number(current.driver_pay) : null;
+      const cut =
+        rate !== null && driverPay !== null && Number.isFinite(rate) && Number.isFinite(driverPay)
+          ? (rate - driverPay).toFixed(2)
+          : "";
+      return current.cut === cut ? current : { ...current, cut };
+    });
+  }, [isCompanyDriver]);
 
   function pickBroker(id: string) {
     const amz = /amazon/i.test(brokers.find((b) => b.id === id)?.name ?? "");
@@ -1648,7 +1888,13 @@ function NewLoadModal({
       miles: form.miles ? Number(form.miles) : null,
       rate: form.rate ? Number(form.rate) : 0,
       driver_pay: form.driver_pay ? Number(form.driver_pay) : 0,
-      cut: form.cut ? Number(form.cut) : 0,
+      cut: isCompanyDriver
+        ? form.rate.trim() && form.driver_pay.trim()
+          ? Number(form.rate) - Number(form.driver_pay)
+          : 0
+        : form.cut
+          ? Number(form.cut)
+          : 0,
       notes: form.notes || null,
     };
     if (existing) {
@@ -1667,7 +1913,7 @@ function NewLoadModal({
       .from("loads")
       .insert({
         ...fields,
-        status: form.driver_id ? "assigned" : "new",
+        status: "booked",
         created_by: userData.user?.id ?? null,
       })
       .select("id")
@@ -1683,9 +1929,10 @@ function NewLoadModal({
       initial ? "Load created from an import or template" : "Load created",
     );
     if (form.driver_id) {
+      const driverLoads = [...loads, { driver_id: form.driver_id, status: "booked" }];
       await supabase
         .from("drivers")
-        .update({ status: "on_load", dispatch_status: "in_transit" })
+        .update(automaticDriverDispatchState(driverLoads, form.driver_id))
         .eq("id", form.driver_id);
       const selectedDriver = drivers.find((d) => d.id === form.driver_id);
       const warnings = selectedDriver ? safetyIssues(selectedDriver) : [];
@@ -1854,9 +2101,16 @@ function NewLoadModal({
         />
         <div>
           <TextInput
-            label={cutManuallySet ? "CUT ($ · manual)" : "CUT ($ · rate − driver pay)"}
+            label={
+              isCompanyDriver
+                ? "CUT ($ · locked: rate − driver pay)"
+                : cutManuallySet
+                  ? "CUT ($ · manual)"
+                  : "CUT ($ · rate − driver pay)"
+            }
             type="number"
             value={form.cut}
+            disabled={isCompanyDriver}
             onChange={(value) => {
               setCutManuallySet(true);
               set("cut")(value);
@@ -1864,7 +2118,9 @@ function NewLoadModal({
           />
           <p className="mt-1 text-[10px] text-mut">
             {form.rate.trim() && form.driver_pay.trim()
-              ? `Calculated: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}. You can override CUT.`
+              ? isCompanyDriver
+                ? `Locked calculation: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}.`
+                : `Calculated: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}. You can override CUT.`
               : "Enter rate and driver pay to calculate company CUT."}
           </p>
         </div>

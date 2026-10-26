@@ -143,6 +143,7 @@ export type Database = {
           dispatch_status: string;
           dispatcher_id: string | null;
           driver_code: string | null;
+          driver_type: string;
           email: string | null;
           full_name: string;
           hire_date: string | null;
@@ -167,6 +168,7 @@ export type Database = {
           dispatch_status?: string;
           dispatcher_id?: string | null;
           driver_code?: string | null;
+          driver_type?: string;
           email?: string | null;
           full_name: string;
           hire_date?: string | null;
@@ -191,6 +193,7 @@ export type Database = {
           dispatch_status?: string;
           dispatcher_id?: string | null;
           driver_code?: string | null;
+          driver_type?: string;
           email?: string | null;
           full_name?: string;
           hire_date?: string | null;

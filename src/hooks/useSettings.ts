@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { tbl } from "./useShifts";
 import { DEFAULT_UPDATE_HOURS, parseIntervals } from "@/lib/intervals";
+import { readDispatchStatusConfig } from "@/lib/dispatch-statuses";
 
 /** Company settings (table app_settings): key -> text value. */
 export function useAppSettings() {
@@ -20,7 +21,10 @@ export function useAppSettings() {
 export function useSaveSetting() {
   const qc = useQueryClient();
   return async (key: string, value: string) => {
-    const { error } = await tbl("app_settings").upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    const { error } = await tbl("app_settings").upsert(
+      { key, value, updated_at: new Date().toISOString() },
+      { onConflict: "key" },
+    );
     if (error) throw new Error(error.message);
     await qc.invalidateQueries({ queryKey: ["app-settings"] });
     if (key === "company_timezone") await qc.invalidateQueries({ queryKey: ["company-tz"] });
@@ -38,6 +42,7 @@ export function useBusinessSettings() {
       detentionFreeHours: Number.isFinite(free) && free >= 0 ? free : 2,
       detentionRate: Number.isFinite(rate) && rate > 0 ? rate : null,
       updateHours: parseIntervals(data?.["update_intervals"]) ?? DEFAULT_UPDATE_HOURS,
+      dispatchStatuses: readDispatchStatusConfig(data?.["dispatch_status_config"]),
     };
   }, [data]);
 }

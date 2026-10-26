@@ -25,6 +25,7 @@ import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { ACTIVE_STATUSES, label, safetyIssues } from "@/lib/tms";
 import { scoreDriver, type DriverScore } from "@/lib/dispatch";
 import { addDays } from "@/lib/shifts";
+import { automaticDriverDispatchState } from "@/lib/driver-dispatch";
 import { usePlanRows } from "@/components/maintenance-kit";
 import { DispatchTasksPanel } from "@/components/tasks-kit";
 import { DriverLocationsPanel } from "@/components/DriverLocationsPanel";
@@ -233,6 +234,14 @@ function Dispatch() {
       toast.error("That trailer is already on an active load");
       return;
     }
+    const currentLoad = loads.find((load) => load.id === loadId);
+    if (!currentLoad) {
+      toast.error("This load is no longer available. Refresh the board and retry.");
+      return;
+    }
+    const nextLoadStatus = ["new", "available"].includes(currentLoad.status)
+      ? "booked"
+      : currentLoad.status;
     const drv = drivers.find((d) => d.id === driverId);
     const issues = drv ? safetyIssues(drv) : [];
     const warns = [
@@ -253,16 +262,25 @@ function Dispatch() {
         truck_id: truckId || null,
         trailer_id: trailerId || null,
         dispatcher_id: dispatcherId || null,
-        status: "assigned",
+        status: nextLoadStatus,
       })
       .eq("id", loadId);
     if (error) {
       toast.error(error.message);
       return;
     }
+    const updatedLoads = loads.map((load) =>
+      load.id === loadId
+        ? {
+            ...currentLoad,
+            driver_id: driverId,
+            status: nextLoadStatus,
+          }
+        : load,
+    );
     await supabase
       .from("drivers")
-      .update({ status: "on_load", dispatch_status: "in_transit" })
+      .update(automaticDriverDispatchState(updatedLoads, driverId))
       .eq("id", driverId);
     if (truckId) await supabase.from("trucks").update({ status: "assigned" }).eq("id", truckId);
     if (trailerId)

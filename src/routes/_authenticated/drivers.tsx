@@ -46,8 +46,10 @@ function DriversPage() {
       initialOpenId={open}
       loading={isLoading}
       titleOf={(d) => d.full_name}
-      subtitleOf={(d) => `${d.driver_code ?? "—"} · ${label(d.status)} · ${d.phone ?? "no phone"}`}
-      searchKeys={["full_name", "driver_code", "phone", "email", "cdl_number"]}
+      subtitleOf={(d) =>
+        `${label(d.driver_type)} · ${d.driver_code ?? "—"} · ${label(d.status)} · ${d.phone ?? "no phone"}`
+      }
+      searchKeys={["full_name", "driver_code", "driver_type", "phone", "email", "cdl_number"]}
       filters={[
         {
           key: "status",
@@ -55,9 +57,25 @@ function DriversPage() {
           options: opts(DRIVER_STATUSES),
           test: (r, v) => r.status === v,
         },
+        {
+          key: "driver_type",
+          label: "driver types",
+          options: opts(["company_driver", "owner_operator"]),
+          test: (r, v) => r.driver_type === v,
+        },
       ]}
       fields={[
         { key: "full_name", label: "Full name", required: true },
+        {
+          key: "driver_type",
+          label: "Driver type",
+          type: "select",
+          required: true,
+          options: [
+            { value: "owner_operator", text: "Owner operator" },
+            { value: "company_driver", text: "Company driver" },
+          ],
+        },
         { key: "driver_code", label: "Driver code" },
         { key: "unit_number", label: "Unit" },
         { key: "status", label: "Status", type: "select", options: opts(DRIVER_STATUSES) },
@@ -88,6 +106,7 @@ function DriversPage() {
       ]}
       columns={[
         { key: "full_name", text: "Driver", className: "text-fg" },
+        { key: "driver_type", text: "Driver type", render: (d) => label(d.driver_type) },
         { key: "driver_code", text: "Code", className: "font-mono" },
         { key: "status", text: "Status", render: (d) => <StatusPill status={d.status} /> },
         { key: "phone", text: "Phone" },

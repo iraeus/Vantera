@@ -8,17 +8,9 @@ import { EmptyRow, Modal, Panel, PanelHeader } from "@/components/ui-kit";
 import { StatusPill } from "@/components/StatusPill";
 import { ACTIVE_STATUSES, label } from "@/lib/tms";
 import { useUserPreference } from "@/hooks/useUserPreference";
-
-const DISPATCH_STATUSES = [
-  { value: "ready", text: "Ready" },
-  { value: "issue", text: "Issue" },
-  { value: "covered", text: "Covered" },
-  { value: "prebook", text: "Prebook" },
-  { value: "in_transit", text: "In transit" },
-  { value: "rest_home", text: "Rest / home" },
-  { value: "shop", text: "Shop" },
-  { value: "no_update", text: "No update" },
-] as const;
+import { useBusinessSettings } from "@/hooks/useSettings";
+import { dispatchStatusColor, dispatchStatusName } from "@/lib/dispatch-statuses";
+import { automaticDriverDispatchState } from "@/lib/driver-dispatch";
 
 const LOAD_RESOLUTIONS = [
   { value: "delivered", text: "Completed" },
@@ -38,6 +30,7 @@ function masterStatusForDispatch(driver: Driver, status: string) {
   if (["ready", "covered", "prebook"].includes(status)) return "available";
   if (status === "in_transit") return "on_load";
   if (status === "rest_home") return "home";
+  if (status === "off_duty") return "off_duty";
   return driver.status;
 }
 
@@ -55,6 +48,7 @@ export function DriverLocationsPanel({
   title?: string;
 }) {
   const queryClient = useQueryClient();
+  const { dispatchStatuses } = useBusinessSettings();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [locationDraft, setLocationDraft] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -79,11 +73,20 @@ export function DriverLocationsPanel({
   }, [drivers, selectedDriverId]);
 
   const selectedDriver = drivers.find((driver) => driver.id === selectedDriverId) ?? null;
-  const visibleDrivers = drivers.filter((driver) =>
-    `${driver.full_name} ${driver.current_location ?? ""} ${driver.unit_number ?? ""}`
-      .toLowerCase()
-      .includes(driverSearch.trim().toLowerCase()),
-  );
+  const visibleDrivers = drivers
+    .filter((driver) =>
+      `${driver.full_name} ${driver.current_location ?? ""} ${driver.unit_number ?? ""} ${dispatchStatusName(driver.dispatch_status, dispatchStatuses)}`
+        .toLowerCase()
+        .includes(driverSearch.trim().toLowerCase()),
+    )
+    .sort((a, b) => {
+      const aStatus = dispatchStatuses.find((status) => status.value === a.dispatch_status);
+      const bStatus = dispatchStatuses.find((status) => status.value === b.dispatch_status);
+      return (
+        (aStatus?.priority ?? Number.MAX_SAFE_INTEGER) -
+        (bStatus?.priority ?? Number.MAX_SAFE_INTEGER)
+      );
+    });
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -171,8 +174,7 @@ export function DriverLocationsPanel({
       );
       return;
     }
-    const statusLabel =
-      DISPATCH_STATUSES.find((item) => item.value === status)?.text ?? label(status);
+    const statusLabel = dispatchStatusName(status, dispatchStatuses) ?? label(status);
     await logActivity("driver", driver.id, `Dispatch status changed to ${statusLabel}`);
     await queryClient.invalidateQueries({ queryKey: ["drivers"] });
     toast.success(`${driver.full_name}: ${statusLabel}`);
@@ -309,7 +311,7 @@ export function DriverLocationsPanel({
     await logActivity(
       "driver",
       driver.id,
-      `Dispatch status changed to ${DISPATCH_STATUSES.find((item) => item.value === status)?.text ?? label(status)}; ${changed.length} load(s) updated`,
+      `Dispatch status changed to ${dispatchStatusName(status, dispatchStatuses)}; ${changed.length} load(s) updated`,
     );
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["loads"] }),
@@ -352,21 +354,15 @@ export function DriverLocationsPanel({
     }
 
     await logLoadEvent(load.id, "delivered", "Load marked delivered from Dispatch Board");
-    const driverHasOtherLoads = loads.some(
-      (item) =>
-        item.id !== load.id &&
-        item.driver_id === driver.id &&
-        ACTIVE_STATUSES.includes(item.status),
+    const remainingLoads = loads.filter((item) => item.id !== load.id);
+    const driverHasOtherLoads = remainingLoads.some(
+      (item) => item.driver_id === driver.id && ACTIVE_STATUSES.includes(item.status),
     );
     const resources: Array<Promise<{ error: { message: string } | null }>> = [
       (async () =>
         await supabase
           .from("drivers")
-          .update(
-            driverHasOtherLoads
-              ? { status: "on_load" }
-              : { status: "available", dispatch_status: "ready" },
-          )
+          .update(automaticDriverDispatchState(remainingLoads, driver.id))
           .eq("id", driver.id))(),
     ];
     if (
@@ -418,7 +414,9 @@ export function DriverLocationsPanel({
     } else if (driverHasOtherLoads) {
       toast.success(`${load.load_number} marked delivered; other loads remain assigned.`);
     } else {
-      toast.success(`${load.load_number} marked delivered; ${driver.full_name} is ready.`);
+      toast.success(
+        `${load.load_number} marked delivered; ${driver.full_name} is ${dispatchStatusName("covered", dispatchStatuses)}.`,
+      );
     }
   }
 
@@ -457,11 +455,26 @@ export function DriverLocationsPanel({
                     className={`w-full rounded-md px-2.5 py-2 text-left transition-colors ${isSelected ? "bg-accent/12 ring-1 ring-accent/35" : "hover:bg-panel2/70"}`}
                   >
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs font-medium text-fg">
-                        {driver.full_name}
+                      <span className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium text-fg">
+                        <span className="truncate">{driver.full_name}</span>
+                        <span
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                          style={{
+                            color: dispatchStatusColor(driver.dispatch_status, dispatchStatuses),
+                            backgroundColor: `${dispatchStatusColor(driver.dispatch_status, dispatchStatuses)}22`,
+                          }}
+                        >
+                          {dispatchStatusName(driver.dispatch_status, dispatchStatuses)}
+                        </span>
                       </span>
                       <span
-                        className="size-1.5 shrink-0 rounded-full bg-accent"
+                        className="size-1.5 shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: dispatchStatusColor(
+                            driver.dispatch_status,
+                            dispatchStatuses,
+                          ),
+                        }}
                         aria-hidden="true"
                       />
                     </span>
@@ -624,17 +637,15 @@ export function DriverLocationsPanel({
                           aria-label={`Dispatch status for ${driver.full_name}`}
                           className="h-7 max-w-full rounded-md bg-background px-2 text-[11px] text-fg ring-1 ring-line focus:ring-accent/40 focus:outline-none disabled:opacity-50"
                         >
-                          {DISPATCH_STATUSES.map((status) => (
+                          {dispatchStatuses.map((status) => (
                             <option key={status.value} value={status.value}>
-                              {status.text}
+                              {status.name}
                             </option>
                           ))}
                         </select>
                       ) : (
                         <span className="text-[11px] text-fg">
-                          {DISPATCH_STATUSES.find(
-                            (status) => status.value === driver.dispatch_status,
-                          )?.text ?? "No update"}
+                          {dispatchStatusName(driver.dispatch_status, dispatchStatuses)}
                         </span>
                       )}
                     </div>
@@ -725,8 +736,7 @@ export function DriverLocationsPanel({
             <div className="rounded-lg bg-transit/10 p-3 text-xs text-fg ring-1 ring-transit/25">
               <p className="font-medium">
                 Set driver status to{" "}
-                {DISPATCH_STATUSES.find((item) => item.value === pendingStatusChange.status)
-                  ?.text ?? label(pendingStatusChange.status)}
+                {dispatchStatusName(pendingStatusChange.status, dispatchStatuses)}
               </p>
               <p className="mt-1 text-mut">
                 Choose a new status for each load you want to change. Loads left as “Keep current”
