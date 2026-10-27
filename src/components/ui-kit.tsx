@@ -15,10 +15,10 @@ export function PanelHeader({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2">
+    <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 sm:px-4">
       <span className="font-display text-sm font-semibold tracking-tight">{title}</span>
       {count && <span className="num font-mono text-[11px] text-mut">{count}</span>}
-      <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">{children}</div>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:ml-auto sm:flex-none">{children}</div>
     </div>
   );
 }
@@ -105,7 +105,7 @@ export function Modal({
   return createPortal(
     <div className="modal-backdrop-enter fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-ink/80 p-3 sm:p-6">
       <div
-        className={`modal-dialog-enter my-auto flex max-h-[calc(100dvh-1.5rem)] w-full ${wide ? "max-w-3xl" : "max-w-md"} flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20`}
+        className={`modal-dialog-enter my-auto flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full ${wide ? "max-w-3xl" : "max-w-md"} flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20`}
       >
         <div className="flex h-12 shrink-0 items-center border-b border-line px-4">
           <span className="font-display text-sm font-semibold tracking-tight">{title}</span>

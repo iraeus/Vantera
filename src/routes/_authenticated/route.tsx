@@ -38,6 +38,7 @@ import { Guard } from "@/components/entity-kit";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { DisplayMenu } from "@/components/display-menu";
 import { AlertsBell } from "@/components/alerts-bell";
+import { LoadTimeAlerts } from "@/components/LoadTimeAlerts";
 import { TaskToaster } from "@/hooks/useTasks";
 import { BootGate } from "@/components/boot-gate";
 import { BootScreen } from "@/components/boot-screen";
@@ -122,6 +123,13 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Settings,
 };
 
+const MOBILE_NAV = [
+  { to: "/dashboard", module: "dashboard", text: "Home", icon: Gauge },
+  { to: "/loads", module: "loads", text: "Loads", icon: Package },
+  { to: "/dispatch", module: "dispatch", text: "Dispatch", icon: Radio },
+  { to: "/drivers", module: "drivers", text: "Drivers", icon: UserRound },
+] as const;
+
 function AuthedLayout() {
   const { data: me } = useCurrentUser();
   const navigate = useNavigate();
@@ -160,7 +168,7 @@ function AuthedLayout() {
   return (
     <>
     <BootGate />
-    <div className="flex min-h-screen bg-ink text-sm text-fg">
+    <div className="flex min-h-dvh min-w-0 overflow-x-clip bg-ink text-sm text-fg">
       {/* Dark backdrop behind the drawer on phones */}
       {navOpen && (
         <div
@@ -171,7 +179,7 @@ function AuthedLayout() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-accent/25 bg-gradient-to-b from-panel via-panel to-panel2/70 shadow-2xl shadow-ink/20 transition-transform duration-200 md:sticky md:top-0 md:z-10 md:h-screen md:w-60 md:translate-x-0 md:shadow-none ${navOpen ? "translate-x-0" : "-translate-x-full md:hidden"}`}
+        className={`fixed inset-y-0 left-0 z-40 flex w-[min(18rem,88vw)] shrink-0 flex-col border-r border-accent/25 bg-gradient-to-b from-panel via-panel to-panel2/70 shadow-2xl shadow-ink/20 transition-transform duration-200 md:sticky md:top-0 md:z-10 md:h-screen md:w-60 md:translate-x-0 md:shadow-none ${navOpen ? "translate-x-0" : "-translate-x-full md:hidden"}`}
       >
         <div className="flex h-14 items-center gap-2.5 border-b border-accent/20 bg-accent/5 px-4">
           <img src="/logo.png" alt="Vantera TMS logo" className="size-8 rounded-lg ring-1 ring-accent/30" />
@@ -257,8 +265,8 @@ function AuthedLayout() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-panel px-4">
+      <div className="flex min-h-dvh min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b border-line bg-chrome/95 px-3 backdrop-blur sm:h-14 sm:gap-3 sm:px-4">
           <button
             onClick={() => setNavOpen((open) => !open)}
             className="grid size-8 shrink-0 place-items-center rounded-lg bg-panel2 text-mut ring-1 ring-line transition-colors hover:bg-accent/12 hover:text-accent"
@@ -284,13 +292,43 @@ function AuthedLayout() {
             <GlobalSearch />
           </div>
           <TaskToaster />
+          <LoadTimeAlerts />
           <AlertsBell />
           <DisplayMenu />
         </header>
 
-        <main key={pathname} className="page-enter flex-1 space-y-4 p-4">
+        <main key={pathname} className="page-enter min-w-0 flex-1 space-y-3 p-3 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:space-y-4 sm:p-4 md:pb-4">
           {currentModule ? <Guard module={currentModule}><Outlet /></Guard> : <Outlet />}
         </main>
+        <nav
+          aria-label="Primary navigation"
+          className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 border-t border-line bg-chrome/95 px-1 pt-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgb(0_0_0/0.18)] backdrop-blur-sm md:hidden"
+        >
+          {MOBILE_NAV.filter((item) => !permLoading && can(item.module as PermModule, "view")).map((item) => {
+            const Icon = item.icon;
+            const active = pathname.startsWith(item.to);
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                aria-current={active ? "page" : undefined}
+                className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[10px] font-medium ${active ? "text-accent" : "text-mut"}`}
+              >
+                <Icon className="size-5" aria-hidden="true" />
+                <span>{item.text}</span>
+              </Link>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setNavOpen(true)}
+            className="flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[10px] font-medium text-mut"
+            aria-label="Open all sections"
+          >
+            <Menu className="size-5" aria-hidden="true" />
+            <span>More</span>
+          </button>
+        </nav>
       </div>
     </div>
     </>

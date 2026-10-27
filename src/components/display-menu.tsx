@@ -3,9 +3,9 @@ import { DENSITIES, THEMES, useDisplay, type Theme } from "@/hooks/useDisplay";
 
 /** Small color swatch that previews each theme (hard-coded on purpose: it must look the same under every theme). */
 const SWATCH: Record<Theme, { bg: string; panel: string; accent: string }> = {
-  dark: { bg: "#11191c", panel: "#1d282c", accent: "#65d5c0" },
-  mid: { bg: "#39494b", panel: "#506163", accent: "#a5e3d8" },
-  light: { bg: "#f4f8f7", panel: "#ffffff", accent: "#087e75" },
+  dark: { bg: "#11191c", panel: "#1d282c", accent: "#f2bd67" },
+  mid: { bg: "#39494b", panel: "#506163", accent: "#ffe0a3" },
+  light: { bg: "#f4f8f7", panel: "#ffffff", accent: "#805400" },
 };
 
 function Swatch({ theme }: { theme: Theme }) {

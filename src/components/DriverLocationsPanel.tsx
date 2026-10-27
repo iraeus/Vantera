@@ -29,7 +29,8 @@ type PendingStatusChange = {
 function masterStatusForDispatch(driver: Driver, status: string) {
   if (["ready", "covered", "prebook"].includes(status)) return "available";
   if (status === "in_transit") return "on_load";
-  if (status === "rest_home") return "home";
+  if (status === "home") return "home";
+  if (status === "rest") return "off_duty";
   if (status === "off_duty") return "off_duty";
   return driver.status;
 }

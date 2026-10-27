@@ -30,6 +30,7 @@ import {
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { LoadExtras } from "@/components/load-extras";
 import { TemplatesModal, templateToForm } from "@/components/load-templates";
+import { LoadStopsEditor } from "@/components/LoadStopsEditor";
 import {
   ACTIVE_STATUSES,
   LOAD_STATUSES,
@@ -50,6 +51,67 @@ import {
   findFacility,
   isAmazonLoadId,
 } from "@/lib/amazon-facilities";
+import {
+  createLoadStop,
+  easternDateToday,
+  initialLoadStops,
+  normalizeLoadStops,
+  type LoadStop,
+} from "@/lib/load-stops";
+
+const US_STATE_ABBREVIATIONS: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS",
+  kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD", massachusetts: "MA",
+  michigan: "MI", minnesota: "MN", mississippi: "MS", missouri: "MO", montana: "MT",
+  nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ",
+  "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND",
+  ohio: "OH", oklahoma: "OK", oregon: "OR", pennsylvania: "PA", "rhode island": "RI",
+  "south carolina": "SC", "south dakota": "SD", tennessee: "TN", texas: "TX",
+  utah: "UT", vermont: "VT", virginia: "VA", washington: "WA", "west virginia": "WV",
+  wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
+};
+
+function normalizeCityState(city: string, state: string) {
+  const parts = city.split(",").map((part) => part.trim()).filter(Boolean);
+  const cityName = parts[0] ?? "";
+  const stateName = (state || parts[1] || "").replace(/\./g, "").trim().toLowerCase();
+  const stateCode = US_STATE_ABBREVIATIONS[stateName] ?? stateName.toUpperCase();
+  return cityName && stateCode ? `${cityName.toLowerCase()}, ${stateCode}` : "";
+}
+
+function estimateLoadStopMiles(stops: LoadStop[]) {
+  if (stops.length < 2) return null;
+  const facilities = stops.map((stop) => {
+    const codeMatch = findFacility(stop.facility_name);
+    if (codeMatch) return codeMatch;
+    const address = stop.street_address.trim().toLowerCase();
+    const city = normalizeCityState(stop.city, stop.state);
+    const postalCode = stop.postal_code.match(/\b\d{5}\b/)?.[0] ?? stop.street_address.match(/\b\d{5}\b/)?.[0] ?? "";
+    return AMAZON_FACILITIES.find((facility) =>
+      (address && facility.address.trim().toLowerCase() === address) ||
+      (city && normalizeCityState(facility.city, "") === city) ||
+      (postalCode && facility.address.match(/\b\d{5}\b/)?.[0] === postalCode),
+    ) ?? null;
+  });
+  if (facilities.some((facility) => !facility)) return null;
+  let total = 0;
+  for (let index = 1; index < facilities.length; index++) {
+    const leg = facilityMiles(facilities[index - 1]!, facilities[index]!);
+    if (leg == null) return null;
+    total += leg;
+  }
+  return total;
+}
+
+function notifyLoadSaveError(message: string) {
+  if (/stops.*schema cache|schema cache.*stops/i.test(message)) {
+    toast.error("Database update required: apply the latest Supabase migration, then reload the page.");
+    return;
+  }
+  toast.error(message);
+}
 
 export const Route = createFileRoute("/_authenticated/loads")({
   validateSearch: (search: Record<string, unknown>): { open?: string } => {
@@ -134,6 +196,7 @@ const LOAD_BACKUP_COLUMNS = [
   "pickup_address",
   "pickup_date",
   "pickup_time",
+  "stops",
   "pickup_eta",
   "pickup_arrived_at",
   "pickup_departed_at",
@@ -226,7 +289,7 @@ function LoadBoard() {
   const [importing, setImporting] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [editing, setEditing] = useState<Load | null>(null);
-  const [imported, setImported] = useState<Partial<LoadForm> | undefined>(undefined);
+  const [imported, setImported] = useState<LoadInitial | undefined>(undefined);
   const [pendingCancellation, setPendingCancellation] = useState<Load | null>(null);
   const [tonuDraft, setTonuDraft] = useState("");
   const [cancellingLoad, setCancellingLoad] = useState(false);
@@ -422,7 +485,7 @@ function LoadBoard() {
       ...exportRows.map((load) =>
         columns.map((column) => {
           const value = load[column as keyof Load];
-          return value == null ? "\\N" : String(value);
+          return value == null ? "\\N" : column === "stops" ? JSON.stringify(value) : String(value);
         }),
       ),
     ]
@@ -443,10 +506,12 @@ function LoadBoard() {
       setPendingCancellation(load);
       return;
     }
-    const { error } = await supabase
-      .from("loads")
-      .update({ status, is_problem: status === "problem" })
-      .eq("id", load.id);
+    const update = {
+      status,
+      is_problem: status === "problem",
+      ...(status === "delivered" ? { delivered_at: new Date().toISOString() } : {}),
+    };
+    const { error } = await supabase.from("loads").update(update).eq("id", load.id);
     if (error) {
       toast.error(error.message);
       return;
@@ -594,7 +659,7 @@ function LoadBoard() {
   }
 
   return (
-    <div className="flex gap-4">
+    <div className="flex min-w-0 gap-4">
       <div className="min-w-0 flex-1 space-y-4">
         <Panel>
           <PanelHeader title="Load board" count={`${rows.length} of ${loads.length} loads`}>
@@ -739,7 +804,48 @@ function LoadBoard() {
             )}
           </div>
 
-          <div className="overflow-x-auto">
+          <div className="divide-y divide-line md:hidden">
+            {isLoading && <EmptyRow text="Loading loads…" />}
+            {!isLoading && rows.length === 0 && (
+              <EmptyRow text="No loads match this view. Create one to get started." />
+            )}
+            {rows.map((load) => (
+              <div key={load.id} className="flex items-start gap-3 p-3">
+                <input
+                  type="checkbox"
+                  checked={selectedLoadIds.has(load.id)}
+                  onChange={() => toggleLoadSelection(load.id)}
+                  aria-label={`Select load ${load.load_number}`}
+                  className="mt-1 size-5 shrink-0 accent-accent"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(load.id)}
+                  className={`min-w-0 flex-1 rounded-lg p-2 text-left ${selectedId === load.id ? "bg-panel2" : "hover:bg-panel2/70"}`}
+                  aria-label={`Open load ${load.load_number}`}
+                >
+                  <span className="flex min-w-0 items-center justify-between gap-2">
+                    <span className="truncate font-mono text-sm font-semibold text-fg">{load.load_number}</span>
+                    {load.deleted_at ? (
+                      <span className="shrink-0 font-mono text-[10px] text-destructive uppercase">Deleted</span>
+                    ) : (
+                      <StatusPill status={load.is_problem ? "problem" : load.status} />
+                    )}
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-fg">
+                    {load.pickup_location ?? "—"} <span className="text-mut">→</span> {load.delivery_location ?? "—"}
+                  </span>
+                  <span className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-mut">
+                    <span className="truncate">{driverName(load.driver_id)}</span>
+                    <span className="num shrink-0 font-mono">{money(loadRevenue(load))} · CUT {money(load.cut)}</span>
+                  </span>
+                  <span className="mt-1 block font-mono text-[10px] text-mut">End date · {loadEndDateKey(load)}</span>
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto md:block">
             <div className="grid h-9 min-w-[1080px] grid-cols-[28px_minmax(0,1fr)] items-center gap-2 border-b border-line px-4 font-mono text-[10px] tracking-[0.12em] text-mut uppercase">
               <input
                 type="checkbox"
@@ -979,6 +1085,15 @@ function LoadBoard() {
   );
 }
 
+function loadStatusChoice(status: string) {
+  if (["booked", "upcoming", "assigned", "dispatched"].includes(status)) return "booked";
+  if (["picked_up", "in_transit", "at_delivery", "unloading"].includes(status))
+    return "in_transit";
+  if (["delivered", "pod_received", "billing", "paid"].includes(status)) return "delivered";
+  if (status === "cancelled" || status === "rejected") return status;
+  return "booked";
+}
+
 function LoadDrawer({
   load,
   onClose,
@@ -1011,9 +1126,15 @@ function LoadDrawer({
   onAssignDispatcher: (dispatcherId: string | null) => void;
 }) {
   const { data: events = [] } = useLoadEvents(load.id);
+  const itinerary = normalizeLoadStops(load.stops);
+  const mileageEstimate = Number(load.miles ?? 0) > 0
+    ? Number(load.miles)
+    : estimateLoadStopMiles(itinerary);
+  const displayedRatePerMile = mileageEstimate ? loadRevenue(load) / mileageEstimate : rpm(load);
 
   return (
-    <aside className="drawer-in sticky top-2 flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-96 max-w-[calc(100vw-1rem)] shrink-0 flex-col overflow-hidden rounded-xl bg-panel ring-1 ring-line shadow-2xl shadow-black/20">
+    <div className="fixed inset-0 z-50 flex justify-end bg-ink/65 sm:static sm:inset-auto sm:z-auto sm:bg-transparent">
+    <aside className="drawer-in flex h-[100dvh] w-full max-w-none shrink-0 flex-col overflow-hidden bg-panel ring-1 ring-line shadow-2xl shadow-black/20 sm:sticky sm:top-2 sm:h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-1rem)] sm:w-96 sm:max-w-[calc(100vw-1rem)] sm:rounded-xl">
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
         <span className="font-mono text-xs text-mut">{load.load_number}</span>
         <StatusPill status={load.is_problem ? "problem" : load.status} />
@@ -1029,42 +1150,61 @@ function LoadDrawer({
           </div>
           <div className="mt-1 font-mono text-[11px] text-mut">
             {load.customer_name ?? "No customer"} · {load.equipment_type ?? "—"} ·{" "}
-            {money(loadRevenue(load))} · {rpm(load).toFixed(2)}/mi
+            {money(loadRevenue(load))} · {displayedRatePerMile.toFixed(2)}/mi
           </div>
         </div>
 
         {canWrite && !load.deleted_at && (
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              onClick={() => onStatus("booked")}
-              disabled={load.status === "booked"}
-              className="rounded-lg bg-accent/12 px-3 py-2.5 text-xs font-semibold text-accent ring-1 ring-accent/30 hover:bg-accent/20 disabled:opacity-50"
-            >
-              {load.status === "booked" ? "Upcoming ✓" : "Mark upcoming"}
-            </button>
-            <button
-              onClick={() => onStatus("in_transit")}
-              disabled={load.status === "in_transit"}
-              className="rounded-lg bg-transit/12 px-3 py-2.5 text-xs font-semibold text-transit ring-1 ring-transit/30 hover:bg-transit/20 disabled:opacity-50"
-            >
-              {load.status === "in_transit" ? "In transit ✓" : "Mark in transit"}
-            </button>
-            <button
-              onClick={() => onStatus("delivered")}
-              disabled={load.status === "delivered"}
-              className="rounded-lg bg-delivered/12 px-3 py-2.5 text-xs font-semibold text-delivered ring-1 ring-delivered/30 hover:bg-delivered/20 disabled:opacity-50"
-            >
-              {load.status === "delivered" ? "Delivered ✓" : "Mark delivered"}
-            </button>
+          <div className="rounded-lg bg-panel2/70 p-3 ring-1 ring-line">
+            <SelectInput
+              label="Load status"
+              value={loadStatusChoice(load.status)}
+              onChange={(next) => {
+                if (next !== loadStatusChoice(load.status)) onStatus(next);
+              }}
+              options={[
+                { value: "booked", text: "Upcoming" },
+                { value: "in_transit", text: "In transit" },
+                { value: "delivered", text: "Delivered" },
+                { value: "cancelled", text: "Cancelled" },
+                { value: "rejected", text: "Rejected" },
+              ]}
+            />
           </div>
         )}
+
+        <Section title="Shipment itinerary" hint={`${itinerary.length} stops`}>
+          {itinerary.length ? (
+            <div className="space-y-1.5">
+              {itinerary.map((stop, index) => (
+                <div key={stop.id} className="flex items-start gap-2 rounded-lg bg-panel2 px-3 py-2 ring-1 ring-line">
+                  <span className="grid size-6 shrink-0 place-items-center rounded-full bg-panel font-mono text-[10px] text-accent ring-1 ring-line">{index + 1}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium text-fg">{stop.stop_type} · {stop.facility_name || "Facility not entered"}</div>
+                    <div className="truncate text-[10px] text-mut">{[stop.street_address, stop.city, stop.state, stop.postal_code].filter(Boolean).join(", ") || "Address not entered"}</div>
+                  </div>
+                  <div className="shrink-0 text-right text-[10px] text-mut">
+                    {stop.appointment_date || "No date"}{stop.appointment_time ? ` · ${stop.appointment_time}` : ""}
+                    <div>{stop.status.replaceAll("_", " ")}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow text="No stops recorded for this load." />
+          )}
+        </Section>
 
         <Section title="Assignment">
           <div className="grid grid-cols-2 gap-3 rounded-lg bg-panel2 p-3 text-xs ring-1 ring-line">
             <Cell label="Truck" value={truck} mono />
             <Cell label="Trailer" value={trailer} mono />
             <Cell label="Driver" value={driverName} />
-            <Cell label="Miles" value={load.miles ? String(load.miles) : "—"} mono />
+            <Cell
+              label={Number(load.miles ?? 0) > 0 ? "Miles" : mileageEstimate ? "Miles (estimate)" : "Miles"}
+              value={mileageEstimate ? Math.round(mileageEstimate).toLocaleString() : "—"}
+              mono
+            />
           </div>
           {canWrite && !load.deleted_at && (
             <DriverAssign load={load} drivers={drivers} onAssign={onAssignDriver} />
@@ -1181,6 +1321,7 @@ function LoadDrawer({
         </div>
       )}
     </aside>
+    </div>
   );
 }
 
@@ -1294,8 +1435,10 @@ type LoadForm = {
   consignee: string;
   pickup_location: string;
   pickup_date: string;
+  pickup_time: string;
   delivery_location: string;
   delivery_date: string;
+  delivery_time: string;
   commodity: string;
   weight: string;
   equipment_type: string;
@@ -1305,6 +1448,8 @@ type LoadForm = {
   cut: string;
   notes: string;
 };
+
+type LoadInitial = Partial<LoadForm> & { stops?: LoadStop[] };
 
 const s = (v: unknown) => (v == null ? "" : String(v));
 
@@ -1365,7 +1510,7 @@ async function restoreLoadBackup(rows: Record<string, string>[], headers: string
     throw new Error("This backup needs both id and load_number columns");
   }
   const payload = rows.map((row, rowIndex) => {
-    const restored: Record<string, string | number | boolean | null> = {};
+    const restored: Record<string, unknown> = {};
     for (const column of columns) {
       const raw = row[column];
       if (raw === undefined) continue;
@@ -1380,6 +1525,14 @@ async function restoreLoadBackup(rows: Record<string, string>[], headers: string
         if (!Number.isFinite(value))
           throw new Error(`Invalid ${column} value on CSV row ${rowIndex + 2}`);
         restored[column] = value;
+      } else if (column === "stops") {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (!Array.isArray(parsed)) throw new Error();
+          restored[column] = parsed;
+        } catch {
+          throw new Error(`Invalid stops JSON on CSV row ${rowIndex + 2}`);
+        }
       } else if (LOAD_BOOLEAN_COLUMNS.has(column)) {
         restored[column] = ["true", "t", "1", "yes"].includes(raw.trim().toLowerCase());
       } else {
@@ -1411,7 +1564,7 @@ function ImportModal({
 }: {
   brokers: { id: string; name: string }[];
   onClose: () => void;
-  onParsed: (initial: Partial<LoadForm>) => void;
+  onParsed: (initial: LoadInitial) => void;
 }) {
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -1420,7 +1573,7 @@ function ImportModal({
   const [importingCsv, setImportingCsv] = useState(false);
   const scan = useServerFn(scanLoadFile);
   const qc = useQueryClient();
-  const [pending, setPending] = useState<Partial<LoadForm> | null>(null);
+  const [pending, setPending] = useState<LoadInitial | null>(null);
   const [broker, setBroker] = useState({
     name: "",
     mc_number: "",
@@ -1611,6 +1764,18 @@ function ImportModal({
             l.stops.map((x) => `${x.kind} ${x.facility_code || x.city} ${x.scheduled}`).join(" → "),
         l.notes,
       ].filter(Boolean);
+      const scannedStops = l.stops.map((item, index) => {
+        const stop = createLoadStop(item.kind === "pickup" ? "pickup" : "delivery", index + 1);
+        const scheduled = item.scheduled ?? "";
+        stop.facility_name = item.facility_code || "";
+        stop.street_address = item.address || "";
+        stop.city = item.city || "";
+        stop.appointment_date = /^\d{4}-\d{2}-\d{2}/.test(scheduled)
+          ? scheduled.slice(0, 10)
+          : easternDateToday();
+        stop.appointment_time = scheduled.match(/(?:T|\s)(\d{2}:\d{2})/)?.[1] ?? "";
+        return stop;
+      });
       const isAmz = /amazon/i.test(l.broker.name) || isAmazonLoadId(l.load_number);
       setBroker({
         name: isAmz ? "Amazon" : l.broker.name,
@@ -1633,6 +1798,7 @@ function ImportModal({
         rate: l.rate != null ? String(l.rate) : "",
         equipment_type: l.equipment_type || "Power only",
         notes: extra.join("\n"),
+        stops: scannedStops,
       });
       toast.success("Load scanned — confirm the broker");
     } catch (e) {
@@ -1752,11 +1918,12 @@ function NewLoadModal({
   loads: Load[];
   dispatchers: Profile[];
   existing?: Load;
-  initial?: Partial<LoadForm> | undefined;
+  initial?: LoadInitial | undefined;
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [form, setForm] = useState<LoadForm>(() => {
+    const todayEastern = easternDateToday();
     const base: LoadForm = {
       load_number: `L-${Math.floor(10000 + Math.random() * 89999)}`,
       driver_id: "",
@@ -1766,9 +1933,11 @@ function NewLoadModal({
       shipper: "",
       consignee: "",
       pickup_location: "",
-      pickup_date: "",
+      pickup_date: existing ? s(existing.pickup_date) : initial?.pickup_date || todayEastern,
+      pickup_time: existing ? s(existing.pickup_time) : s(initial?.pickup_time),
       delivery_location: "",
-      delivery_date: "",
+      delivery_date: existing ? s(existing.delivery_date) : initial?.delivery_date || todayEastern,
+      delivery_time: existing ? s(existing.delivery_time) : s(initial?.delivery_time),
       commodity: "",
       weight: "",
       equipment_type: "Power only",
@@ -1783,8 +1952,27 @@ function NewLoadModal({
         base[k] = s((existing as Record<string, unknown>)[k]);
       });
     }
-    return { ...base, ...initial };
+    const { stops: _initialStops, ...initialFields } = initial ?? {};
+    return { ...base, ...initialFields };
   });
+  const [stops, setStops] = useState<LoadStop[]>(() =>
+    initialLoadStops(
+      initial?.stops ?? existing?.stops,
+      {
+        shipper: form.shipper,
+        pickup_address: existing?.pickup_address,
+        pickup_location: form.pickup_location,
+        pickup_date: form.pickup_date,
+        pickup_time: form.pickup_time,
+        consignee: form.consignee,
+        delivery_address: existing?.delivery_address,
+        delivery_location: form.delivery_location,
+        delivery_date: form.delivery_date,
+        delivery_time: form.delivery_time,
+      },
+      existing ? "" : easternDateToday(),
+    ),
+  );
   const [cutManuallySet, setCutManuallySet] = useState(() => {
     const rate = Number(existing?.rate ?? initial?.rate ?? 0);
     const driverPay = Number(existing?.driver_pay ?? initial?.driver_pay ?? 0);
@@ -1794,13 +1982,50 @@ function NewLoadModal({
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
   const [pickupAddr, setPickupAddr] = useState(
-    existing?.pickup_address ?? findFacility(form.shipper)?.address ?? "",
+    stops.find((stop) => stop.stop_type === "pickup")?.street_address ??
+      existing?.pickup_address ?? findFacility(form.shipper)?.address ?? "",
   );
   const [deliveryAddr, setDeliveryAddr] = useState(
-    existing?.delivery_address ?? findFacility(form.consignee)?.address ?? "",
+    [...stops].reverse().find((stop) => stop.stop_type === "delivery")?.street_address ??
+      existing?.delivery_address ?? findFacility(form.consignee)?.address ?? "",
   );
   const [autoMiles, setAutoMiles] = useState<string | null>(null);
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+  useEffect(() => {
+    if (form.miles.trim() && form.miles !== "0" && form.miles !== autoMiles) return;
+    const estimatedMiles = estimateLoadStopMiles(stops);
+    if (estimatedMiles == null) return;
+    const estimateText = String(estimatedMiles);
+    if (form.miles !== estimateText) set("miles")(estimateText);
+    if (autoMiles !== estimateText) setAutoMiles(estimateText);
+  }, [stops, form.miles, autoMiles]);
+  function changeStops(next: LoadStop[]) {
+    const ordered = next.map((stop, index) => ({ ...stop, sequence_number: index + 1 }));
+    setStops(ordered);
+    const estimatedMiles = estimateLoadStopMiles(ordered);
+    const pickup = ordered.find((stop) => stop.stop_type === "pickup") ?? ordered[0];
+    const delivery = [...ordered].reverse().find((stop) => stop.stop_type === "delivery") ?? ordered.at(-1);
+    const place = (stop: LoadStop | undefined) =>
+      stop ? [stop.city, stop.state].filter(Boolean).join(", ") : "";
+    setForm((current) => ({
+      ...current,
+      shipper: pickup?.facility_name ?? "",
+      pickup_location: place(pickup),
+      pickup_date: pickup?.appointment_date ?? "",
+      pickup_time: pickup?.appointment_time ?? "",
+      consignee: delivery?.facility_name ?? "",
+      delivery_location: place(delivery),
+      delivery_date: delivery?.appointment_date ?? "",
+      delivery_time: delivery?.appointment_time ?? "",
+      ...(estimatedMiles != null && (current.miles === "" || current.miles === autoMiles)
+        ? { miles: String(estimatedMiles) }
+        : {}),
+    }));
+    if (estimatedMiles != null && (form.miles === "" || form.miles === autoMiles))
+      setAutoMiles(String(estimatedMiles));
+    setPickupAddr(pickup?.street_address ?? "");
+    setDeliveryAddr(delivery?.street_address ?? "");
+  }
   const setFinancial = (k: "rate" | "driver_pay") => (v: string) => {
     setCutManuallySet(false);
     setForm((current) => {
@@ -1817,21 +2042,30 @@ function NewLoadModal({
   const isAmazon = /amazon/i.test(brokers.find((b) => b.id === form.broker_id)?.name ?? "");
   const selectedDriver = drivers.find((driver) => driver.id === form.driver_id);
   const isCompanyDriver = selectedDriver?.driver_type === "company_driver";
+  const isPercentageOwnerOperator =
+    selectedDriver?.driver_type === "owner_operator" && selectedDriver.pay_type === "percentage";
   const selectedDriverIssues = selectedDriver ? safetyIssues(selectedDriver) : [];
 
   useEffect(() => {
-    if (!isCompanyDriver) return;
+    if (!isCompanyDriver && !isPercentageOwnerOperator) return;
     setCutManuallySet(false);
     setForm((current) => {
       const rate = current.rate.trim() ? Number(current.rate) : null;
-      const driverPay = current.driver_pay.trim() ? Number(current.driver_pay) : null;
+      const driverPay = isPercentageOwnerOperator && rate !== null
+        ? (rate * Math.min(100, Math.max(0, Number(selectedDriver?.pay_rate ?? 0)))) / 100
+        : current.driver_pay.trim() ? Number(current.driver_pay) : null;
       const cut =
         rate !== null && driverPay !== null && Number.isFinite(rate) && Number.isFinite(driverPay)
           ? (rate - driverPay).toFixed(2)
           : "";
-      return current.cut === cut ? current : { ...current, cut };
+      const driverPayText = isPercentageOwnerOperator && driverPay !== null
+        ? driverPay.toFixed(2)
+        : current.driver_pay;
+      return current.cut === cut && current.driver_pay === driverPayText
+        ? current
+        : { ...current, driver_pay: driverPayText, cut };
     });
-  }, [isCompanyDriver]);
+  }, [isCompanyDriver, isPercentageOwnerOperator, selectedDriver?.pay_rate, form.rate]);
 
   function pickBroker(id: string) {
     const amz = /amazon/i.test(brokers.find((b) => b.id === id)?.name ?? "");
@@ -1847,48 +2081,86 @@ function NewLoadModal({
     const up = code.toUpperCase();
     const fac = findFacility(up);
     (side === "pickup" ? setPickupAddr : setDeliveryAddr)(fac ? fac.address : "");
-    setForm((f) => {
-      const next =
-        side === "pickup"
-          ? { ...f, shipper: up, pickup_location: fac ? fac.city : f.pickup_location }
-          : { ...f, consignee: up, delivery_location: fac ? fac.city : f.delivery_location };
-      // Auto-calculate miles when both facilities are known, unless the user typed miles manually.
-      const from = findFacility(next.shipper);
-      const to = findFacility(next.consignee);
-      const miles = from && to ? facilityMiles(from, to) : null;
-      if (miles != null && (f.miles === "" || f.miles === autoMiles)) {
-        next.miles = String(miles);
-        setAutoMiles(String(miles));
+    const index = side === "pickup"
+      ? stops.findIndex((stop) => stop.stop_type === "pickup")
+      : stops.map((stop) => stop.stop_type).lastIndexOf("delivery");
+    if (index >= 0) {
+      const next = stops.slice();
+      const stop = next[index]!;
+      next[index] = {
+        ...stop,
+        facility_name: up,
+        street_address: fac?.address ?? "",
+        city: fac?.city ?? stop.city,
+      };
+      setStops(next);
+      const estimatedMiles = estimateLoadStopMiles(next);
+      if (estimatedMiles != null && (form.miles === "" || form.miles === autoMiles)) {
+        setAutoMiles(String(estimatedMiles));
+        set("miles")(String(estimatedMiles));
       }
-      return next;
-    });
+    }
+    setForm((f) => side === "pickup"
+      ? { ...f, shipper: up, pickup_location: fac ? fac.city : f.pickup_location }
+      : { ...f, consignee: up, delivery_location: fac ? fac.city : f.delivery_location });
+  }
+
+  function setStopFacility(side: "pickup" | "delivery", value: string) {
+    set(side === "pickup" ? "shipper" : "consignee")(value);
+    const index = side === "pickup"
+      ? stops.findIndex((stop) => stop.stop_type === "pickup")
+      : stops.map((stop) => stop.stop_type).lastIndexOf("delivery");
+    if (index >= 0) {
+      const next = stops.slice();
+      const facility = findFacility(value);
+      const [city = "", state = ""] = facility?.city.split(",").map((part) => part.trim()) ?? [];
+      next[index] = {
+        ...next[index]!,
+        facility_name: value,
+        ...(facility ? { street_address: facility.address, city, state, country: "United States" } : {}),
+      };
+      setStops(next);
+      const estimatedMiles = estimateLoadStopMiles(next);
+      if (estimatedMiles != null && (form.miles === "" || form.miles === autoMiles)) {
+        setAutoMiles(String(estimatedMiles));
+        set("miles")(String(estimatedMiles));
+      }
+    }
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     const { data: userData } = await supabase.auth.getUser();
+    const orderedStops = stops.map((stop, index) => ({ ...stop, sequence_number: index + 1 }));
+    const primaryPickup = orderedStops.find((stop) => stop.stop_type === "pickup") ?? orderedStops[0];
+    const primaryDelivery =
+      [...orderedStops].reverse().find((stop) => stop.stop_type === "delivery") ?? orderedStops.at(-1);
+    const stopPlace = (stop: LoadStop | undefined) =>
+      stop ? [stop.city, stop.state].filter(Boolean).join(", ") : "";
     const fields = {
       load_number: isAmazon ? form.load_number.trim().toUpperCase() : form.load_number,
       driver_id: form.driver_id || null,
       dispatcher_id: form.dispatcher_id || null,
       broker_id: form.broker_id || null,
       customer_name: isAmazon ? "Amazon" : form.customer_name || null,
-      shipper: form.shipper || null,
-      consignee: form.consignee || null,
-      pickup_location: form.pickup_location || null,
-      pickup_address: pickupAddr || null,
-      pickup_date: form.pickup_date || null,
-      delivery_location: form.delivery_location || null,
-      delivery_address: deliveryAddr || null,
-      delivery_date: form.delivery_date || null,
+      shipper: primaryPickup?.facility_name || form.shipper || null,
+      consignee: primaryDelivery?.facility_name || form.consignee || null,
+      pickup_location: stopPlace(primaryPickup) || form.pickup_location || null,
+      pickup_address: primaryPickup?.street_address || pickupAddr || null,
+      pickup_date: primaryPickup?.appointment_date || form.pickup_date || null,
+      pickup_time: primaryPickup?.appointment_time || form.pickup_time || null,
+      delivery_location: stopPlace(primaryDelivery) || form.delivery_location || null,
+      delivery_address: primaryDelivery?.street_address || deliveryAddr || null,
+      delivery_date: primaryDelivery?.appointment_date || form.delivery_date || null,
+      delivery_time: primaryDelivery?.appointment_time || form.delivery_time || null,
+      stops: orderedStops as never,
       commodity: form.commodity || null,
-      weight: form.weight ? Number(form.weight) : null,
       equipment_type: form.equipment_type || null,
       miles: form.miles ? Number(form.miles) : null,
       rate: form.rate ? Number(form.rate) : 0,
       driver_pay: form.driver_pay ? Number(form.driver_pay) : 0,
-      cut: isCompanyDriver
+      cut: isCompanyDriver || isPercentageOwnerOperator
         ? form.rate.trim() && form.driver_pay.trim()
           ? Number(form.rate) - Number(form.driver_pay)
           : 0
@@ -1901,7 +2173,7 @@ function NewLoadModal({
       const { error } = await supabase.from("loads").update(fields).eq("id", existing.id);
       setBusy(false);
       if (error) {
-        toast.error(error.message);
+        notifyLoadSaveError(error.message);
         return;
       }
       await logLoadEvent(existing.id, "edited", "Load edited");
@@ -1920,7 +2192,7 @@ function NewLoadModal({
       .single();
     setBusy(false);
     if (error) {
-      toast.error(error.message);
+      notifyLoadSaveError(error.message);
       return;
     }
     await logLoadEvent(
@@ -1958,13 +2230,6 @@ function NewLoadModal({
       onClose={onClose}
       wide
     >
-      <datalist id="amz-fac">
-        {AMAZON_FACILITIES.map((f) => (
-          <option key={f.code} value={f.code}>
-            {f.city}
-          </option>
-        ))}
-      </datalist>
       <form onSubmit={submit} className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <SelectInput
           label="Broker"
@@ -2047,38 +2312,16 @@ function NewLoadModal({
           </>
         ) : (
           <>
-            <TextInput label="Shipper" value={form.shipper} onChange={set("shipper")} />
-            <TextInput label="Consignee" value={form.consignee} onChange={set("consignee")} />
+            <TextInput label="Shipper / pickup facility" value={form.shipper} onChange={(value) => setStopFacility("pickup", value)} />
+            <TextInput label="Consignee / delivery facility" value={form.consignee} onChange={(value) => setStopFacility("delivery", value)} />
           </>
         )}
         <TextInput label="Commodity" value={form.commodity} onChange={set("commodity")} />
-        <TextInput
-          label="Pickup city"
-          value={form.pickup_location}
-          onChange={set("pickup_location")}
-        />
-        <TextInput
-          label="Pickup date"
-          type="date"
-          value={form.pickup_date}
-          onChange={set("pickup_date")}
-        />
+        <LoadStopsEditor stops={stops} onChange={changeStops} />
         <TextInput label="Equipment" value={form.equipment_type} onChange={set("equipment_type")} />
         <TextInput
-          label="Delivery city"
-          value={form.delivery_location}
-          onChange={set("delivery_location")}
-        />
-        <TextInput
-          label="Delivery date"
-          type="date"
-          value={form.delivery_date}
-          onChange={set("delivery_date")}
-        />
-        <TextInput label="Weight (lb)" type="number" value={form.weight} onChange={set("weight")} />
-        <TextInput
           label={
-            isAmazon && autoMiles !== null && form.miles === autoMiles ? "Miles (auto)" : "Miles"
+            autoMiles !== null && form.miles === autoMiles ? "Miles (auto)" : "Miles"
           }
           type="number"
           value={form.miles}
@@ -2087,6 +2330,7 @@ function NewLoadModal({
             set("miles")(v);
           }}
         />
+        <p className="col-span-full -mt-2 text-[10px] text-mut">Miles are estimated from the full stop order when locations match the facility directory. You can enter or adjust miles manually.</p>
         <TextInput
           label="Rate ($)"
           type="number"
@@ -2094,23 +2338,26 @@ function NewLoadModal({
           onChange={setFinancial("rate")}
         />
         <TextInput
-          label="Driver pay ($)"
+          label={isPercentageOwnerOperator
+            ? `Driver pay ($ · ${selectedDriver?.pay_rate}% gross)`
+            : "Driver pay ($)"}
           type="number"
           value={form.driver_pay}
           onChange={setFinancial("driver_pay")}
+          disabled={isPercentageOwnerOperator}
         />
         <div>
           <TextInput
             label={
-              isCompanyDriver
-                ? "CUT ($ · locked: rate − driver pay)"
+              isCompanyDriver || isPercentageOwnerOperator
+                ? "CUT ($ · locked: gross − driver share)"
                 : cutManuallySet
                   ? "CUT ($ · manual)"
                   : "CUT ($ · rate − driver pay)"
             }
             type="number"
             value={form.cut}
-            disabled={isCompanyDriver}
+            disabled={isCompanyDriver || isPercentageOwnerOperator}
             onChange={(value) => {
               setCutManuallySet(true);
               set("cut")(value);
@@ -2118,7 +2365,7 @@ function NewLoadModal({
           />
           <p className="mt-1 text-[10px] text-mut">
             {form.rate.trim() && form.driver_pay.trim()
-              ? isCompanyDriver
+              ? isCompanyDriver || isPercentageOwnerOperator
                 ? `Locked calculation: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}.`
                 : `Calculated: $${(Number(form.rate) - Number(form.driver_pay)).toFixed(2)}. You can override CUT.`
               : "Enter rate and driver pay to calculate company CUT."}
@@ -2149,16 +2396,57 @@ function FacilityInput({
   address: string;
   onChange: (v: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const normalized = (query || value).trim().toLowerCase();
+  const matches = normalized
+    ? AMAZON_FACILITIES.filter((f) =>
+        `${f.code} ${f.city} ${f.address}`.toLowerCase().includes(normalized),
+      ).slice(0, 30)
+    : AMAZON_FACILITIES.slice(0, 30);
+
   return (
     <label className="block">
       <span className="font-mono text-[10px] tracking-[0.14em] text-mut uppercase">{text}</span>
-      <input
-        list="amz-fac"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="SAT3"
-        className="mt-1 h-9 w-full rounded-lg bg-ink px-3 font-mono text-sm text-fg ring-1 ring-line focus:outline-none"
-      />
+      <div className="relative">
+        <input
+          value={open ? query : value}
+          onFocus={() => {
+            setQuery(value);
+            setOpen(true);
+          }}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            onChange(e.target.value.toUpperCase());
+            setOpen(true);
+          }}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          placeholder="Search code, city, or address (e.g. SAT3)"
+          autoComplete="off"
+          className="mt-1 h-9 w-full rounded-lg bg-ink px-3 font-mono text-sm text-fg ring-1 ring-line focus:outline-none"
+        />
+        {open && (
+          <div className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-line bg-panel p-1 shadow-xl">
+            {matches.length ? matches.map((f) => (
+              <button
+                key={f.code}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange(f.code);
+                  setQuery(f.code);
+                  setOpen(false);
+                }}
+                className="flex w-full items-start justify-between gap-3 rounded-md px-2 py-2 text-left text-xs hover:bg-ink"
+              >
+                <span className="font-mono font-semibold text-fg">{f.code}</span>
+                <span className="min-w-0 flex-1 truncate text-mut">{f.city} · {f.address}</span>
+              </button>
+            )) : <p className="px-2 py-2 text-xs text-mut">No matching facility. You can still enter a code manually.</p>}
+            <p className="border-t border-line px-2 py-1.5 text-[10px] text-mut">Showing up to 30 matches · {AMAZON_FACILITIES.length.toLocaleString()} facilities indexed</p>
+          </div>
+        )}
+      </div>
       <span className={`mt-1 block text-[11px] ${address ? "text-accent" : "text-mut"}`}>
         {address ||
           (value ? "Unknown facility — type address in city field" : "Type a facility code")}

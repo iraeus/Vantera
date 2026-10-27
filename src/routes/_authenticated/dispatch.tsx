@@ -28,7 +28,7 @@ import { addDays } from "@/lib/shifts";
 import { automaticDriverDispatchState } from "@/lib/driver-dispatch";
 import { usePlanRows } from "@/components/maintenance-kit";
 import { DispatchTasksPanel } from "@/components/tasks-kit";
-import { DriverLocationsPanel } from "@/components/DriverLocationsPanel";
+import { DispatchCalendar } from "@/components/DispatchCalendar";
 import { fmtTime } from "@/components/entity-kit";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useUserPreference } from "@/hooks/useUserPreference";
@@ -50,7 +50,6 @@ const DISPATCH_PANEL_ORDER = [
   "alerts",
   "unassigned",
   "assigned",
-  "drivers",
   "freeing",
   "trucks",
   "trailers",
@@ -62,7 +61,6 @@ const DISPATCH_PANEL_LABELS: Record<DispatchPanel, string> = {
   alerts: "Priority alerts",
   unassigned: "Unassigned loads",
   assigned: "Assigned & rolling",
-  drivers: "Dispatch drivers",
   freeing: "Freeing up soon",
   trucks: "Available trucks",
   trailers: "Available trailers",
@@ -78,10 +76,12 @@ function Dispatch() {
   const { can } = usePermissions();
   const queryClient = useQueryClient();
   const [openId, setOpenId] = useState<string | null>(null);
-  const [firstPanel, setFirstPanel] = useUserPreference<DispatchPanel>(
+  const [savedFirstPanel, setFirstPanel] = useUserPreference<DispatchPanel>(
     "dispatch-first-panel",
     "tasks",
   );
+  const firstPanel: DispatchPanel =
+    (savedFirstPanel as string) === "drivers" ? "tasks" : savedFirstPanel;
 
   const panelOrder = [firstPanel, ...DISPATCH_PANEL_ORDER.filter((panel) => panel !== firstPanel)];
 
@@ -91,7 +91,6 @@ function Dispatch() {
   );
   const assigned = loads.filter((l) => l.driver_id && ACTIVE_STATUSES.includes(l.status));
 
-  const busyDriverIds = new Set(assigned.map((l) => l.driver_id));
   const busyTruckIds = new Set(assigned.map((l) => l.truck_id));
   const busyTrailerIds = new Set(assigned.map((l) => l.trailer_id));
   const dispatcherName = (id: string | null) => {
@@ -303,13 +302,13 @@ function Dispatch() {
             <div className="divide-y divide-line/60">
               {risks.length === 0 && <EmptyRow text="No urgent dispatch alerts." />}
               {risks.slice(0, 8).map((risk) => (
-                <div key={risk.key} className="flex items-center gap-3 px-4 py-2 text-xs">
+                <div key={risk.key} className="flex min-w-0 items-center gap-3 px-3 py-2 text-xs sm:px-4">
                   <span
                     className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] ${risk.tone === "problem" ? "bg-problem/12 text-problem" : "bg-transit/15 text-transit"}`}
                   >
                     {risk.tag}
                   </span>
-                  <span className="text-fg">{risk.text}</span>
+                  <span className="min-w-0 truncate text-fg">{risk.text}</span>
                 </div>
               ))}
             </div>
@@ -325,10 +324,10 @@ function Dispatch() {
                 <EmptyRow text="Every load has a driver." />
               )}
               {unassigned.map((load) => (
-                <div key={load.id} className="px-4 py-3">
-                  <div className="grid grid-cols-[110px_1fr_110px_100px] items-center gap-2">
+                <div key={load.id} className="px-3 py-3 sm:px-4">
+                  <div className="grid grid-cols-2 items-center gap-2 md:grid-cols-[110px_minmax(0,1fr)_110px_100px]">
                     <span className="font-mono text-xs text-fg">{load.load_number}</span>
-                    <span className="truncate text-fg">
+                    <span className="col-span-2 min-w-0 truncate text-xs text-fg md:col-span-1 md:text-sm">
                       {load.pickup_location ?? "—"} → {load.delivery_location ?? "—"}
                       {load.dispatcher_id && (
                         <span className="ml-2 text-[10px] text-mut">
@@ -336,11 +335,15 @@ function Dispatch() {
                         </span>
                       )}
                     </span>
-                    <StatusPill status={load.status} />
+                    <span className="justify-self-start">
+                      <StatusPill status={load.status} />
+                    </span>
                     {me?.canWrite && (
-                      <GhostButton onClick={() => setOpenId(openId === load.id ? null : load.id)}>
-                        {openId === load.id ? "Close" : "Assign"}
-                      </GhostButton>
+                      <span className="justify-self-end">
+                        <GhostButton onClick={() => setOpenId(openId === load.id ? null : load.id)}>
+                          {openId === load.id ? "Close" : "Assign"}
+                        </GhostButton>
+                      </span>
                     )}
                   </div>
                   {openId === load.id && (
@@ -376,10 +379,10 @@ function Dispatch() {
               {assigned.map((load) => (
                 <div
                   key={load.id}
-                  className="grid min-h-11 grid-cols-[110px_1fr_140px_120px_110px_110px] items-center gap-2 px-4 py-1"
+                  className="grid grid-cols-2 items-center gap-x-3 gap-y-2 px-3 py-3 lg:min-h-11 lg:grid-cols-[110px_minmax(0,1fr)_140px_120px_110px_110px] lg:gap-2 lg:px-4 lg:py-1"
                 >
                   <span className="font-mono text-xs text-fg">{load.load_number}</span>
-                  <span className="truncate text-fg">
+                  <span className="col-span-2 min-w-0 truncate text-fg lg:col-span-1">
                     {load.pickup_location ?? "—"} → {load.delivery_location ?? "—"}
                   </span>
                   <span className="truncate text-mut">
@@ -387,7 +390,7 @@ function Dispatch() {
                   </span>
                   <span className="truncate text-mut">{dispatcherName(load.dispatcher_id)}</span>
                   <StatusPill status={load.status} />
-                  <span className="flex gap-1">
+                  <span className="col-span-2 flex gap-2 lg:col-span-1">
                     {drivers.find((driver) => driver.id === load.driver_id)?.phone && (
                       <a
                         href={`tel:${drivers.find((driver) => driver.id === load.driver_id)?.phone}`}
@@ -407,18 +410,6 @@ function Dispatch() {
               ))}
             </div>
           </Panel>
-        );
-      case "drivers":
-        return (
-          <DriverLocationsPanel
-            title="Dispatch driver board"
-            drivers={drivers.filter(
-              (driver) => driver.status !== "inactive" || busyDriverIds.has(driver.id),
-            )}
-            loads={loads}
-            canEdit={can("dispatch", "edit") || can("updates", "edit")}
-            canEditDispatch={can("dispatch", "edit")}
-          />
         );
       case "freeing":
         return (
@@ -464,6 +455,12 @@ function Dispatch() {
 
   return (
     <div className="space-y-4">
+      <DispatchCalendar
+        drivers={drivers}
+        loads={loads}
+        dispatchers={profiles}
+        canEdit={can("dispatch", "edit")}
+      />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <label className="block w-64 max-w-full">
           <span className="font-mono text-[10px] tracking-[0.14em] text-mut uppercase">

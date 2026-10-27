@@ -11,7 +11,7 @@ import {
 } from "@/components/ui-kit";
 import { useAllLoads, useDrivers, useProfiles } from "@/hooks/useTms";
 import { useUserPreference } from "@/hooks/useUserPreference";
-import { label, money } from "@/lib/tms";
+import { label, loadRevenue, money } from "@/lib/tms";
 import type { Load } from "@/hooks/useTms";
 
 export const Route = createFileRoute("/_authenticated/gross")({
@@ -149,11 +149,27 @@ function GrossBoard() {
   );
   const driverName = (id: string | null) =>
     drivers.find((driver) => driver.id === id)?.full_name ?? "Unassigned driver";
+  const payPercentage = (load: Load) => {
+    const driver = drivers.find((item) => item.id === load.driver_id);
+    if (driver?.driver_type !== "owner_operator" || driver.pay_type !== "percentage") return null;
+    const value = Number(driver.pay_rate ?? 0);
+    return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+  };
+  const calculatedDriverPay = (load: Load) => {
+    const percentage = payPercentage(load);
+    return percentage === null ? Number(load.driver_pay ?? 0) : (loadRevenue(load) * percentage) / 100;
+  };
+  const calculatedCompanyCut = (load: Load) => {
+    const percentage = payPercentage(load);
+    return percentage === null
+      ? Number(load.cut ?? 0)
+      : Math.max(0, loadRevenue(load) - calculatedDriverPay(load));
+  };
   const dispatcherName = (id: string | null) => {
     const person = profiles.find((profile) => profile.id === id);
     return person?.full_name ?? person?.email ?? "—";
   };
-  const companyProfit = filteredPeriodLoads.reduce((sum, load) => sum + Number(load.cut ?? 0), 0);
+  const companyProfit = filteredPeriodLoads.reduce((sum, load) => sum + calculatedCompanyCut(load), 0);
   const tonuLoads = allLoads.filter((load) => {
     if (load.deleted_at || Number(load.tonu_amount ?? 0) <= 0 || load.status !== "cancelled")
       return false;
@@ -177,7 +193,7 @@ function GrossBoard() {
     0,
   );
   const driverPayTotal = filteredPeriodLoads.reduce(
-    (sum, load) => sum + Number(load.driver_pay ?? 0),
+    (sum, load) => sum + calculatedDriverPay(load),
     0,
   );
 
@@ -204,7 +220,7 @@ function GrossBoard() {
         gross: 0,
         loads: [],
       };
-      current.gross += Number(load.driver_pay ?? 0);
+      current.gross += calculatedDriverPay(load);
       current.loads.push(load);
       byDispatcher.set(load.dispatcher_id, current);
     }
@@ -212,12 +228,12 @@ function GrossBoard() {
       sort === "high" ? b.gross - a.gross : a.gross - b.gross,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodLoads, sort, dispatchStaff]);
+  }, [periodLoads, sort, dispatchStaff, drivers]);
 
   const companyRows = periodLoads
-    .filter((load) => Number(load.cut ?? 0) > 0)
+    .filter((load) => calculatedCompanyCut(load) > 0)
     .filter((load) => personId === "all" || load.dispatcher_id === personId)
-    .sort((a, b) => Number(b.cut) - Number(a.cut));
+    .sort((a, b) => calculatedCompanyCut(b) - calculatedCompanyCut(a));
   const selectedPerson =
     personId === "all" ? null : (people.find((person) => person.id === personId) ?? null);
   const details =
@@ -236,8 +252,8 @@ function GrossBoard() {
       load: load.load_number,
       driver: driverName(load.driver_id),
       dispatcher: dispatcherName(load.dispatcher_id),
-      pay: money(load.driver_pay),
-      cut: money(load.cut),
+      pay: money(calculatedDriverPay(load)),
+      cut: money(calculatedCompanyCut(load)),
       state: label(load.status),
     }));
     const tonuRows = tonuLoads.map((load) => ({
@@ -375,7 +391,7 @@ function GrossBoard() {
                         </td>
                         <td className="num px-4 py-3 font-mono text-transit">
                           {money(
-                            person.loads.reduce((sum, load) => sum + Number(load.cut ?? 0), 0),
+                            person.loads.reduce((sum, load) => sum + calculatedCompanyCut(load), 0),
                           )}
                         </td>
                       </tr>
@@ -404,6 +420,8 @@ function GrossBoard() {
               loads={details}
               driverName={driverName}
               dispatcherName={dispatcherName}
+              driverPay={calculatedDriverPay}
+              companyCut={calculatedCompanyCut}
               showCut={false}
             />
           </>
@@ -418,6 +436,8 @@ function GrossBoard() {
               loads={companyRows}
               driverName={driverName}
               dispatcherName={dispatcherName}
+              driverPay={calculatedDriverPay}
+              companyCut={calculatedCompanyCut}
               showCut
             />
           </>
@@ -449,11 +469,15 @@ function GrossLoadRows({
   loads,
   driverName,
   dispatcherName,
+  driverPay,
+  companyCut,
   showCut,
 }: {
   loads: Load[];
   driverName: (id: string | null) => string;
   dispatcherName: (id: string | null) => string;
+  driverPay: (load: Load) => number;
+  companyCut: (load: Load) => number;
   showCut: boolean;
 }) {
   if (!loads.length)
@@ -498,9 +522,9 @@ function GrossLoadRows({
                 )}
               </td>
               {showCut && (
-                <td className="num px-4 py-3 font-mono text-transit">{money(load.cut)}</td>
+                <td className="num px-4 py-3 font-mono text-transit">{money(companyCut(load))}</td>
               )}
-              <td className="num px-4 py-3 font-mono">{money(load.driver_pay)}</td>
+              <td className="num px-4 py-3 font-mono">{money(driverPay(load))}</td>
             </tr>
           ))}
         </tbody>

@@ -4,14 +4,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
-import { logLoadEvent, useAllLoads, useBrokers } from "@/hooks/useTms";
+import { logLoadEvent, useAllLoads, useBrokers, useDrivers, type Driver } from "@/hooks/useTms";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useBusinessSettings } from "@/hooks/useSettings";
 import { billingBuckets, invoiceCsvRows, sumAmount, type BillRow } from "@/lib/billing";
 import { detentionFor, fmtHours } from "@/lib/detention";
 import { money } from "@/lib/tms";
 import { localDate } from "@/lib/maintenance";
-import { EmptyRow, GhostButton, Modal, Panel, PanelHeader, PrimaryButton, TextInput } from "@/components/ui-kit";
+import { EmptyRow, GhostButton, Modal, Panel, PanelHeader, PrimaryButton, SelectInput, TextInput } from "@/components/ui-kit";
 import { exportCsv, fmtTime } from "@/components/entity-kit";
 
 export const Route = createFileRoute("/_authenticated/billing")({
@@ -30,6 +30,7 @@ type Action = { kind: "invoice" | "paid"; row: BillRow } | null;
 function BillingPage() {
   const { data: loads = [], isLoading } = useAllLoads();
   const { data: brokers = [] } = useBrokers();
+  const { data: drivers = [] } = useDrivers();
   const { can } = usePermissions();
   const { detentionFreeHours, detentionRate } = useBusinessSettings();
   const qc = useQueryClient();
@@ -85,6 +86,8 @@ function BillingPage() {
           </div>
         ))}
       </div>
+
+      {canEdit && <DriverPayPanel drivers={drivers} />}
 
       {isLoading && <EmptyRow text="Loading…" />}
 
@@ -177,6 +180,89 @@ function BillingPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function DriverPayPanel({ drivers }: { drivers: Driver[] }) {
+  return (
+    <Panel>
+      <PanelHeader title="Driver type and gross share" count={`${drivers.length} drivers`} />
+      <p className="px-4 pt-3 text-[11px] text-mut">
+        Choose company drivers or owner-operators. Set an owner-operator gross percentage to calculate driver share in the Dispatch Board and Gross Board.
+      </p>
+      <div className="divide-y divide-line/60">
+        {drivers
+          .slice()
+          .sort((a, b) => a.full_name.localeCompare(b.full_name))
+          .map((driver) => (
+            <DriverPayRow key={driver.id} driver={driver} />
+          ))}
+      </div>
+    </Panel>
+  );
+}
+
+function DriverPayRow({ driver }: { driver: Driver }) {
+  const queryClient = useQueryClient();
+  const [driverType, setDriverType] = useState(driver.driver_type ?? "owner_operator");
+  const [percentage, setPercentage] = useState(
+    driver.pay_type === "percentage" && Number(driver.pay_rate) > 0
+      ? String(driver.pay_rate)
+      : "",
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const pct = Number(percentage);
+    if (driverType === "owner_operator" && (!Number.isFinite(pct) || pct < 0 || pct > 100)) {
+      toast.error("Enter an owner-operator share from 0 to 100 percent.");
+      return;
+    }
+    setSaving(true);
+    const values =
+      driverType === "owner_operator"
+        ? { driver_type: driverType, pay_type: "percentage", pay_rate: pct }
+        : { driver_type: driverType };
+    const { error } = await supabase.from("drivers").update(values).eq("id", driver.id);
+    setSaving(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: ["drivers"] });
+    toast.success(`${driver.full_name} accounting settings saved`);
+  }
+
+  return (
+    <div className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(150px,1fr)_180px_170px_100px] sm:items-end">
+      <div className="min-w-0">
+        <div className="truncate text-xs font-medium text-fg">{driver.full_name}</div>
+        <div className="mt-0.5 text-[10px] text-mut">{driver.driver_code ?? driver.unit_number ?? "Driver"}</div>
+      </div>
+      <SelectInput
+        label="Driver type"
+        value={driverType}
+        onChange={setDriverType}
+        options={[
+          { value: "company_driver", text: "Company driver" },
+          { value: "owner_operator", text: "Owner operator" },
+        ]}
+      />
+      {driverType === "owner_operator" ? (
+        <TextInput
+          label="Gross share (%)"
+          type="number"
+          value={percentage}
+          onChange={setPercentage}
+          placeholder="e.g. 90"
+        />
+      ) : (
+        <div className="pb-2 text-[11px] text-mut">Company pay is entered on each load.</div>
+      )}
+      <PrimaryButton disabled={saving} onClick={() => void save()}>
+        {saving ? "Saving…" : "Save"}
+      </PrimaryButton>
     </div>
   );
 }

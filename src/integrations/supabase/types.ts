@@ -76,6 +76,36 @@ export type Database = {
           },
         ];
       };
+      custom_facilities: {
+        Row: {
+          address: string;
+          city: string;
+          created_at: string;
+          id: string;
+          name: string;
+          postal_code: string;
+          state: string;
+        };
+        Insert: {
+          address: string;
+          city: string;
+          created_at?: string;
+          id?: string;
+          name: string;
+          postal_code: string;
+          state: string;
+        };
+        Update: {
+          address?: string;
+          city?: string;
+          created_at?: string;
+          id?: string;
+          name?: string;
+          postal_code?: string;
+          state?: string;
+        };
+        Relationships: [];
+      };
       brokers: {
         Row: {
           address: string | null;
@@ -428,6 +458,7 @@ export type Database = {
           shipper: string | null;
           special_instructions: string | null;
           status: string;
+          stops: Json;
           tonu_amount: number;
           trailer_id: string | null;
           truck_id: string | null;
@@ -486,6 +517,7 @@ export type Database = {
           shipper?: string | null;
           special_instructions?: string | null;
           status?: string;
+          stops?: Json;
           tonu_amount?: number;
           trailer_id?: string | null;
           truck_id?: string | null;
@@ -544,6 +576,7 @@ export type Database = {
           shipper?: string | null;
           special_instructions?: string | null;
           status?: string;
+          stops?: Json;
           tonu_amount?: number;
           trailer_id?: string | null;
           truck_id?: string | null;
